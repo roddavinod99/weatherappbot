@@ -80,7 +80,7 @@ def create_weather_tweet(city):
             rain_forecast = "Light rain may be expected."
 
         india_tz = pytz.timezone('Asia/Kolkata')  # Kolkata is the primary city for IST
-        now_in_india = datetime.datetime.now(india_tz)
+        now_in_india = datetime.now(india_tz)
         my_tweet = f"Current weather in {city} ({now_in_india.strftime('%I:%M %p %Z%z on %A, %B %d, %Y')}):\n" \
                     f"Weather Description: {weather_description}\n" \
                     f"Temperature: {current_temp}°C\n" \
