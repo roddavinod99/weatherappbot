@@ -66,7 +66,7 @@ def create_weather_tweet(city):
             rain_forecast = "Light rain may be expected."
 
 
-        my_tweet = f"Current weather in {city} ({datetime.now().strftime('%I:%M %p %Z%z on %A, %B %d, %Y')}):\n" \
+        my_tweet = f"Weather update for {city}:\n" \
                    f"Weather Description: {weather_description}\n" \
                    f"Temperature: {current_temp}°C\n" \
                    f"Feels like: {feels_like}°C\n" \
