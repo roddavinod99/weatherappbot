@@ -4,6 +4,8 @@ import os
 import schedule
 import time
 from datetime import datetime
+import pytz
+
 
 # Function to get environment variables
 def get_env_variable(var_name):
@@ -77,7 +79,8 @@ def create_weather_tweet(city):
         elif 'rain' in [item.get('main', '').lower() for item in weather_data.get('weather', [])]:
             rain_forecast = "Light rain may be expected."
 
-
+        india_tz = pytz.timezone('Asia/Kolkata')  # Kolkata is the primary city for IST
+    now_in_india = datetime.datetime.now(india_tz)
         my_tweet = f"Current weather in {city} ({datetime.now().strftime('%I:%M %p %Z%z on %A, %B %d, %Y')}):\n" \
                     f"Weather Description: {weather_description}\n" \
                     f"Temperature: {current_temp}°C\n" \
