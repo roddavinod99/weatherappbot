@@ -1,41 +1,29 @@
 import tweepy
 import requests
-import os
+from config import * # Ensure this file exists and has your Twitter API credentials
 import schedule
-import time
+import time # Added for potential scheduling loop
 from datetime import datetime
 
-# Function to get environment variables
-def get_env_variable(var_name):
-    value = os.environ.get(var_name)
-    if value is None:
-        raise EnvironmentError(f"Environment variable '{var_name}' not found.")
-    return value
-
-# Initialize Twitter API client using environment variables
+# Initialize Twitter API client
 try:
-    bearer_token = get_env_variable("TWITTER_BEARER_TOKEN")
-    consumer_key = get_env_variable("TWITTER_API_KEY")
-    consumer_secret = get_env_variable("TWITTER_API_SECRET")
-    access_token = get_env_variable("TWITTER_ACCESS_TOKEN")
-    access_token_secret = get_env_variable("TWITTER_ACCESS_TOKEN_SECRET")
-
     bot_api_client = tweepy.Client(
-        bearer_token=bearer_token,
-        consumer_key=consumer_key,
-        consumer_secret=consumer_secret,
-        access_token=access_token,
-        access_token_secret=access_token_secret
+        bearer_token=TWITTER_BEARER_TOKEN,
+        consumer_key=TWITTER_API_KEY,
+        consumer_secret=TWITTER_API_SECRET,
+        access_token=TWITTER_ACCESS_TOKEN,
+        access_token_secret=TWITTER_ACCESS_TOKEN_SECRET
     )
     print("Twitter client initialized successfully.")
-except EnvironmentError as e:
+except Exception as e:
     print(f"Error initializing Twitter client: {e}")
     exit() # Exit if client initialization fails
 
+
 def get_weather(city):
     """Fetches weather data for a given city from OpenWeatherMap."""
-    weather_api_key = get_env_variable("WEATHER_API_KEY")
-    url = f'https://api.openweathermap.org/data/2.5/weather?q={city}&appid={weather_api_key}&units=metric'
+    # Assuming WEATHER_API_KEY is defined in config.py or globally
+    url = f'https://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric'
     try:
         response = requests.get(url)
         response.raise_for_status() # Raises an HTTPError for bad responses (4XX or 5XX)
@@ -79,13 +67,13 @@ def create_weather_tweet(city):
 
 
         my_tweet = f"Weather update for {city}:\n" \
-                    f"Weather Description: {weather_description}\n" \
-                    f"Temperature: {current_temp}°C\n" \
-                    f"Feels like: {feels_like}°C\n" \
-                    f"Humidity: {humidity}%\n" \
-                    f"Wind Speed: {wind_speed} m/s\n" \
-                    f"Rain Forecast: {rain_forecast}\n\n" \
-                    f"Weather data provided by #OpenWeatherMap."
+                   f"Weather Description: {weather_description}\n" \
+                   f"Temperature: {current_temp}°C\n" \
+                   f"Feels like: {feels_like}°C\n" \
+                   f"Humidity: {humidity}%\n" \
+                   f"Wind Speed: {wind_speed} m/s\n" \
+                   f"Rain Forecast: {rain_forecast}\n\n" \
+                   f"Weather data provided by #OpenWeatherMap."
         print(f"Tweet content created: {my_tweet}")
         return my_tweet
     else:
@@ -117,7 +105,7 @@ def tweet_post(tweet_text):
 # --- Main execution part ---
 def main_job():
     """Defines the main task to be performed."""
-    city_to_check = "Bengaluru"
+    city_to_check = "Gachibowli"
     print(f"\n--- Running weather tweet job for {city_to_check} ---")
     weather_tweet_content = create_weather_tweet(city_to_check)
     tweet_post(weather_tweet_content)
