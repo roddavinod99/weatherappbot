@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 import pytz
 import logging
 from flask import Flask, request
-import math
-import io
+# Removed: import math
+# Removed: import io
 
 # --- Constants ---
 TWITTER_MAX_CHARS = 280
@@ -15,12 +15,13 @@ TWEET_BUFFER = 15
 EFFECTIVE_MAX_CHARS = TWITTER_MAX_CHARS - TWEET_BUFFER
 DEFAULT_RATE_LIMIT_WAIT_SECONDS = 15 * 60
 CITY_TO_MONITOR = "Gachibowli"
-MAP_TILE_ZOOM = 12
-MAP_TILE_LAYER = "clouds_new"
+# Removed: MAP_TILE_ZOOM = 12
+# Removed: MAP_TILE_LAYER = "clouds_new"
 
 # --- Test Mode Configuration ---
 # Set this environment variable to "true" (case-insensitive) to enable actual Twitter interactions.
-# Defaults to False (test mode) if the environment variable is not set or not "true".
+# Defaults to True (live mode) if the environment variable is not set or not "true" as per your last provided snippet.
+# To default to False (test mode), change "true" to "False" in os.environ.get("POST_TO_TWITTER_ENABLED", "False")
 POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "true").lower() == "true"
 
 # --- Logging Configuration ---
@@ -34,9 +35,9 @@ logging.basicConfig(
 )
 
 if POST_TO_TWITTER_ENABLED:
-    logging.info("Twitter interactions ARE ENABLED. Tweets and media will be posted to Twitter.")
+    logging.info("Twitter interactions ARE ENABLED. Tweets will be posted to Twitter.")
 else:
-    logging.warning("Twitter interactions are DISABLED (Test Mode). No actual tweets or media will be posted.")
+    logging.warning("Twitter interactions are DISABLED (Test Mode). No actual tweets will be posted.")
     logging.warning("To enable Twitter interactions, set the environment variable POST_TO_TWITTER_ENABLED=true")
 
 
@@ -54,9 +55,8 @@ def get_env_variable(var_name, critical=True):
     return value
 
 # --- Initialize Twitter API Client ---
-# Clients are initialized regardless of POST_TO_TWITTER_ENABLED to catch auth errors early.
 bot_api_client = None
-bot_api_v1_for_media = None
+# Removed: bot_api_v1_for_media = None
 try:
     bearer_token = get_env_variable("TWITTER_BEARER_TOKEN")
     consumer_key = get_env_variable("TWITTER_API_KEY")
@@ -73,11 +73,10 @@ try:
     )
     logging.info("Twitter v2 client initialized successfully.")
 
-    auth_v1 = tweepy.OAuth1UserHandler(
-        consumer_key, consumer_secret, access_token, access_token_secret
-    )
-    bot_api_v1_for_media = tweepy.API(auth_v1)
-    logging.info("Twitter v1.1 API for media initialized successfully.")
+    # Removed: Twitter v1.1 API for media initialization
+    # auth_v1 = tweepy.OAuth1UserHandler(...)
+    # bot_api_v1_for_media = tweepy.API(auth_v1)
+    # logging.info("Twitter v1.1 API for media initialized successfully.")
 
 except EnvironmentError as e:
     logging.error(f"Error initializing Twitter client due to missing environment variable: {e}. The application might not function correctly.")
@@ -150,44 +149,12 @@ def create_weather_tweet_from_data(city, weather_data):
         logging.warning(error_message)
         return f"Could not create tweet for {city} due to missing data."
 
-# --- Map Tile Functions ---
-def deg2num(lat_deg, lon_deg, zoom):
-    lat_rad = math.radians(lat_deg)
-    n = 2.0 ** zoom
-    xtile = int((lon_deg + 180.0) / 360.0 * n)
-    ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
-    return (xtile, ytile)
+# --- Removed Map Tile Functions ---
+# def deg2num(lat_deg, lon_deg, zoom): ...
+# def get_map_tile_image(lat, lon, zoom=MAP_TILE_ZOOM, layer=MAP_TILE_LAYER): ...
 
-def get_map_tile_image(lat, lon, zoom=MAP_TILE_ZOOM, layer=MAP_TILE_LAYER):
-    try:
-        weather_api_key = get_env_variable("WEATHER_API_KEY")
-    except EnvironmentError:
-        logging.error("WEATHER_API_KEY not found. Cannot fetch map tile.")
-        return None
-
-    xtile, ytile = deg2num(lat, lon, zoom)
-    tile_url = f"https://tile.openweathermap.org/map/{layer}/{zoom}/{xtile}/{ytile}.png?appid={weather_api_key}"
-    logging.info(f"Fetching map tile from: {tile_url}")
-
-    try:
-        response = requests.get(tile_url, timeout=15)
-        response.raise_for_status()
-        if 'image/png' in response.headers.get('Content-Type', '').lower():
-            logging.info(f"Successfully fetched map tile for layer {layer} at lat:{lat}, lon:{lon}.")
-            return response.content
-        else:
-            logging.warning(f"Unexpected content type for map tile: {response.headers.get('Content-Type')}. URL: {tile_url} Response: {response.text[:200]}")
-            return None
-    except requests.exceptions.HTTPError as http_err:
-        logging.error(f"HTTP error fetching map tile: {http_err} - Status: {response.status_code if response else 'N/A'} for URL: {tile_url}")
-        if response is not None: logging.error(f"Response text: {response.text}")
-    except requests.exceptions.RequestException as req_err:
-        logging.error(f"Error fetching map tile: {req_err} for URL: {tile_url}")
-    return None
-
-def tweet_post(tweet_text, media_id=None):
+def tweet_post(tweet_text): # Removed media_id parameter
     """Posts the tweet to Twitter, or simulates if POST_TO_TWITTER_ENABLED is False."""
-    # These initial checks run regardless of test mode
     if not tweet_text:
         logging.warning("Tweet text is empty, cannot post.")
         return False
@@ -200,19 +167,18 @@ def tweet_post(tweet_text, media_id=None):
         logging.info(f"Truncated tweet: {tweet_text}")
 
     log_prefix = "[TEST MODE] " if not POST_TO_TWITTER_ENABLED else ""
-    logging.info(f"{log_prefix}Preparing to post tweet: '{tweet_text}'" + (f" with media_id: {media_id}" if media_id else ""))
+    logging.info(f"{log_prefix}Preparing to post tweet: '{tweet_text}'") # Removed media_id from log
 
     if not POST_TO_TWITTER_ENABLED:
         logging.info(f"{log_prefix}Skipping actual Twitter post as interactions are disabled.")
-        return True # Simulate success for testing workflow
+        return True
 
-    # --- Actual Twitter Interaction (if POST_TO_TWITTER_ENABLED is True) ---
-    if not bot_api_client: # This check is critical if we intend to post
+    if not bot_api_client:
         logging.critical("Twitter client not initialized. Cannot post tweet.")
         return False
         
     try:
-        bot_api_client.create_tweet(text=tweet_text, media_ids=[media_id] if media_id else None)
+        bot_api_client.create_tweet(text=tweet_text) # Simplified create_tweet call
         logging.info("Tweet posted successfully to Twitter!")
         return True
     except tweepy.TooManyRequests as err:
@@ -235,8 +201,8 @@ def tweet_post(tweet_text, media_id=None):
         logging.info(f"Rate limit: Waiting for {retry_after_seconds:.0f} seconds before retrying...")
         time.sleep(retry_after_seconds)
         try:
-            logging.info(f"Retrying to post tweet: {tweet_text}" + (f" with media_id: {media_id}" if media_id else ""))
-            bot_api_client.create_tweet(text=tweet_text, media_ids=[media_id] if media_id else None)
+            logging.info(f"Retrying to post tweet: {tweet_text}") # Removed media_id from log
+            bot_api_client.create_tweet(text=tweet_text) # Simplified create_tweet call
             logging.info("Tweet posted successfully after waiting!")
             return True
         except tweepy.TweepyException as retry_err:
@@ -255,19 +221,17 @@ def tweet_post(tweet_text, media_id=None):
     except Exception as e:
         logging.error(f"An unexpected error occurred during tweeting: {e}")
         return False
-    return False # Should not be reached if all paths return explicitly
+    return False
 
 # --- Task to be Performed on HTTP Request ---
 def perform_scheduled_tweet_task():
-    if not bot_api_client or not bot_api_v1_for_media: # Check if clients are minimally available
-        # This check is more about whether initialization was attempted and failed catastrophically
-        # rather than whether POST_TO_TWITTER_ENABLED is true/false.
+    # Modified client check
+    if not bot_api_client:
         if not POST_TO_TWITTER_ENABLED:
-             logging.warning("[TEST MODE] Twitter clients might not be fully available, but continuing in test mode.")
+            logging.warning("[TEST MODE] Twitter client might not be fully available, but continuing in test mode.")
         else:
-            logging.error("Cannot perform tweet task: Twitter client(s) not properly initialized.")
+            logging.error("Cannot perform tweet task: Twitter client (v2) not properly initialized.")
             return False
-
 
     now_in_india = datetime.now(pytz.timezone('Asia/Kolkata'))
     logging.info(f"--- Running weather tweet job for {CITY_TO_MONITOR} at {now_in_india.strftime('%I:%M %p %Z%z')} ---")
@@ -282,41 +246,18 @@ def perform_scheduled_tweet_task():
         logging.warning(f"Failed to generate tweet content: {weather_tweet_content}")
         return False
 
-    media_id_str = None
-    log_prefix = "[TEST MODE] " if not POST_TO_TWITTER_ENABLED else ""
+    # --- Removed map tile fetching and media upload logic ---
+    # media_id_str = None
+    # log_prefix = "[TEST MODE] " if not POST_TO_TWITTER_ENABLED else ""
+    # if 'coord' in weather_data:
+    # ... entire block removed ...
+    # else:
+    # logging.warning("Coordinates not available in weather data, cannot fetch map tile.")
+    # --- End of removed block ---
 
-    if 'coord' in weather_data:
-        lat = weather_data['coord']['lat']
-        lon = weather_data['coord']['lon']
-        logging.info(f"Attempting to fetch map tile for {CITY_TO_MONITOR} (Lat: {lat}, Lon: {lon}, Zoom: {MAP_TILE_ZOOM}, Layer: {MAP_TILE_LAYER})")
-        image_bytes = get_map_tile_image(lat, lon, zoom=MAP_TILE_ZOOM, layer=MAP_TILE_LAYER)
+    success = tweet_post(weather_tweet_content) # Call without media_id_str
 
-        if image_bytes:
-            if POST_TO_TWITTER_ENABLED:
-                if not bot_api_v1_for_media:
-                    logging.error("Twitter v1.1 API client for media not initialized. Cannot upload map.")
-                else:
-                    try:
-                        img_file = io.BytesIO(image_bytes)
-                        uploaded_media = bot_api_v1_for_media.media_upload(filename="weather_map.png", file=img_file)
-                        media_id_str = uploaded_media.media_id_string
-                        logging.info(f"Map image successfully uploaded to Twitter. Media ID: {media_id_str}")
-                    except tweepy.TweepyException as e:
-                        logging.error(f"Twitter media upload failed: {e}")
-                        if hasattr(e, 'api_errors') and e.api_errors: logging.error(f"Twitter API Errors Detail: {e.api_errors}")
-                        if hasattr(e, 'api_codes') and e.api_codes: logging.error(f"Twitter API Codes: {e.api_codes}")
-                    except Exception as e:
-                        logging.error(f"An unexpected error occurred during media upload: {e}")
-            else: # Test mode for media upload
-                logging.info(f"{log_prefix}Would upload map image to Twitter here. Using fake media ID for testing.")
-                media_id_str = "fake_media_id_for_testing" 
-        else:
-            logging.warning("Could not retrieve map image, will attempt to post tweet without map.")
-    else:
-        logging.warning("Coordinates not available in weather data, cannot fetch map tile.")
-
-    success = tweet_post(weather_tweet_content, media_id=media_id_str)
-
+    log_prefix = "[TEST MODE] " if not POST_TO_TWITTER_ENABLED else "" # Keep for consistent logging
     if success:
         if not POST_TO_TWITTER_ENABLED:
             logging.info(f"{log_prefix}Tweet task for {CITY_TO_MONITOR} completed successfully (simulation).")
@@ -331,23 +272,19 @@ def perform_scheduled_tweet_task():
 def home():
     mode = "LIVE MODE - Twitter interactions ENABLED" if POST_TO_TWITTER_ENABLED else "TEST MODE - Twitter interactions DISABLED"
     logging.info(f"Home endpoint '/' pinged. Current mode: {mode}")
-    return f"Weather Tweet Bot with Map Tile is alive! Current mode: {mode}", 200
+    # Updated message to remove "with Map Tile"
+    return f"Weather Tweet Bot is alive! Current mode: {mode}", 200
 
 @app.route('/run-tweet-task', methods=['POST', 'GET'])
 def run_tweet_task_endpoint():
     logging.info("'/run-tweet-task' endpoint called.")
     
-    # Critical config check that should prevent operation even in test mode if fundamental things are missing
-    # For example, weather API key is needed regardless of Twitter posting.
     try:
         get_env_variable("WEATHER_API_KEY") 
     except EnvironmentError:
         logging.error("Tweet task cannot run: WEATHER_API_KEY is missing.")
         return "Tweet task failed due to missing WEATHER_API_KEY.", 500
     
-    # Twitter client initialization errors are logged at startup.
-    # If clients are None, and we are in LIVE mode, perform_scheduled_tweet_task will handle it.
-
     success = perform_scheduled_tweet_task()
     mode_info = "(Simulated)" if not POST_TO_TWITTER_ENABLED else "(Live)"
 
