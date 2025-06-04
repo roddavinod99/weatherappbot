@@ -2,61 +2,44 @@ import tweepy
 import requests
 import os
 import time
-from datetime import datetime, timedelta
-import pytz
-import logging
-from flask import Flask, request
-# Removed: import math
-# Removed: import io
+from datetime import datetime
+import pytz # For timezone handling
+from flask import Flask # Removed request as it's not used in the provided routes' logic
 
 # --- Constants ---
 TWITTER_MAX_CHARS = 280
-TWEET_BUFFER = 15
+TWEET_BUFFER = 15  # For links or Twitter's own additions
 EFFECTIVE_MAX_CHARS = TWITTER_MAX_CHARS - TWEET_BUFFER
 DEFAULT_RATE_LIMIT_WAIT_SECONDS = 15 * 60
-CITY_TO_MONITOR = "Gachibowli"
-# Removed: MAP_TILE_ZOOM = 12
-# Removed: MAP_TILE_LAYER = "clouds_new"
+CITY_TO_MONITOR = "Gachibowli" # << City is set here
 
 # --- Test Mode Configuration ---
-# Set this environment variable to "true" (case-insensitive) to enable actual Twitter interactions.
-# Defaults to True (live mode) if the environment variable is not set or not "true" as per your last provided snippet.
-# To default to False (test mode), change "true" to "False" in os.environ.get("POST_TO_TWITTER_ENABLED", "False")
+# Defaults to "true" if the environment variable is not set or is not "false"
 POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "true").lower() == "true"
 
-# --- Logging Configuration ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-        # logging.FileHandler('weather_bot.log', encoding='utf-8')
-    ]
-)
-
-if POST_TO_TWITTER_ENABLED:
-    logging.info("Twitter interactions ARE ENABLED. Tweets will be posted to Twitter.")
+if not POST_TO_TWITTER_ENABLED:
+    print("WARNING: Twitter interactions are DISABLED (Test Mode). No actual tweets will be posted.")
+    print("To enable Twitter interactions, set the environment variable POST_TO_TWITTER_ENABLED=true")
 else:
-    logging.warning("Twitter interactions are DISABLED (Test Mode). No actual tweets will be posted.")
-    logging.warning("To enable Twitter interactions, set the environment variable POST_TO_TWITTER_ENABLED=true")
-
+    print("INFO: Twitter interactions ARE ENABLED. Tweets will be posted to Twitter.")
 
 # --- Flask App ---
 app = Flask(__name__)
 
 # --- Environment Variable Handling ---
 def get_env_variable(var_name, critical=True):
+    """
+    Retrieves an environment variable.
+    Raises EnvironmentError if a critical variable is not found.
+    Returns None if an optional variable is not found.
+    """
     value = os.environ.get(var_name)
     if value is None and critical:
-        logging.critical(f"Critical environment variable '{var_name}' not found.")
         raise EnvironmentError(f"Critical environment variable '{var_name}' not found.")
-    elif value is None and not critical:
-        logging.warning(f"Optional environment variable '{var_name}' not found.")
     return value
 
 # --- Initialize Twitter API Client ---
 bot_api_client = None
-# Removed: bot_api_v1_for_media = None
 try:
     bearer_token = get_env_variable("TWITTER_BEARER_TOKEN")
     consumer_key = get_env_variable("TWITTER_API_KEY")
@@ -71,118 +54,148 @@ try:
         access_token=access_token,
         access_token_secret=access_token_secret
     )
-    logging.info("Twitter v2 client initialized successfully.")
-
-    # Removed: Twitter v1.1 API for media initialization
-    # auth_v1 = tweepy.OAuth1UserHandler(...)
-    # bot_api_v1_for_media = tweepy.API(auth_v1)
-    # logging.info("Twitter v1.1 API for media initialized successfully.")
+    # print("INFO: Twitter v2 client initialized successfully.") # Removed logging
 
 except EnvironmentError as e:
-    logging.error(f"Error initializing Twitter client due to missing environment variable: {e}. The application might not function correctly.")
+    print(f"ERROR: Error initializing Twitter client due to missing environment variable: {e}. The application might not function correctly.")
 except Exception as e:
-    logging.critical(f"An unexpected error occurred during Twitter client initialization: {e}")
+    print(f"CRITICAL: An unexpected error occurred during Twitter client initialization: {e}")
 
 # --- Weather Functions ---
 def get_weather(city):
+    """
+    Fetches weather data for the specified city from OpenWeatherMap.
+    Returns weather data as JSON or None if an error occurs.
+    """
     try:
         weather_api_key = get_env_variable("WEATHER_API_KEY")
     except EnvironmentError:
-        logging.error("WEATHER_API_KEY not found. Cannot fetch weather.")
+        # print("ERROR: WEATHER_API_KEY not found. Cannot fetch weather.") # Removed logging
         return None
 
     url = f'https://api.openweathermap.org/data/2.5/weather?q={city}&appid={weather_api_key}&units=metric'
     weather_response = None
     try:
         weather_response = requests.get(url, timeout=10)
-        weather_response.raise_for_status()
-        logging.info(f"Successfully fetched weather data for {city}.")
+        weather_response.raise_for_status() # Raises an HTTPError for bad responses (4XX or 5XX)
         return weather_response.json()
     except requests.exceptions.HTTPError as http_err:
-        logging.error(f"HTTP error fetching weather data for {city}: {http_err} - Status Code: {weather_response.status_code if weather_response else 'N/A'}")
-        if weather_response is not None: logging.error(f"Response text: {weather_response.text}")
+        # print(f"ERROR: HTTP error fetching weather data for {city}: {http_err} - Status Code: {weather_response.status_code if weather_response else 'N/A'}") # Removed logging
+        # if weather_response is not None: print(f"ERROR: Response text: {weather_response.text}") # Removed logging
+        pass # Silently fail or handle as per application requirement
     except requests.exceptions.RequestException as req_err:
-        logging.error(f"Error fetching weather data for {city}: {req_err}")
+        # print(f"ERROR: Error fetching weather data for {city}: {req_err}") # Removed logging
+        pass # Silently fail
     return None
 
 def create_weather_tweet_from_data(city, weather_data):
-    logging.info(f"Attempting to create weather tweet for {city} from provided data...")
-    if weather_data:
-        weather_main_info = weather_data.get('weather', [{}])[0]
-        main_conditions = weather_data.get('main', {})
-        wind_conditions = weather_data.get('wind', {})
-        rain_info = weather_data.get('rain', {})
+    """
+    Formats weather data into a tweet string.
+    """
+    if not weather_data:
+        return f"Could not generate weather report for {city}: Data missing."
 
-        weather_description = weather_main_info.get('description', 'Not available').capitalize()
-        current_temp = main_conditions.get('temp', 'N/A')
-        feels_like = main_conditions.get('feels_like', 'N/A')
-        humidity = main_conditions.get('humidity', 'N/A')
-        wind_speed = wind_conditions.get('speed', 'N/A')
+    # --- Extract data ---
+    weather_main_info = weather_data.get('weather', [{}])[0]
+    main_conditions = weather_data.get('main', {})
+    wind_conditions = weather_data.get('wind', {})
+    rain_info_api = weather_data.get('rain', {})
+    clouds_info = weather_data.get('clouds', {})
+    alerts_api = weather_data.get('alerts')
 
-        rain_forecast = "No rain detected in recent data."
-        if rain_info:
-            rain_volume_1h = rain_info.get('1h')
-            rain_volume_3h = rain_info.get('3h')
-            if rain_volume_1h is not None:
-                rain_forecast = f"Rain (last 1h): {rain_volume_1h} mm."
-            elif rain_volume_3h is not None:
-                rain_forecast = f"Rain (last 3h): {rain_volume_3h} mm."
-        elif 'rain' in [item.get('main', '').lower() for item in weather_data.get('weather', [])]:
-            rain_forecast = "Rain indicated in general conditions."
+    bot_operational_tz = pytz.timezone('Asia/Kolkata')
+    now_for_tweet_header = datetime.now(bot_operational_tz)
+    timestamp_str = now_for_tweet_header.strftime('%H:%M, %b %d, %Y')
 
-        india_tz = pytz.timezone('Asia/Kolkata')
-        now_in_india = datetime.now(india_tz)
+    description_str = weather_main_info.get('description', "N/A").capitalize()
+    current_temp_val = main_conditions.get('temp')
+    temp_str = f"{current_temp_val:.2f}" if current_temp_val is not None else "N/A"
+    feels_like_val = main_conditions.get('feels_like')
+    feels_like_str = f"{feels_like_val:.2f}" if feels_like_val is not None else "N/A"
+    humidity_val = main_conditions.get('humidity')
+    humidity_str = f"{humidity_val:.0f}" if humidity_val is not None else "N/A"
+    wind_speed_val = wind_conditions.get('speed')
+    wind_str = f"{wind_speed_val:.2f}" if wind_speed_val is not None else "N/A"
 
-        my_tweet = (
-            f"{city} Weather ({now_in_india.strftime('%I:%M %p %Z, %b %d')}):\n"
-            f"Cond: {weather_description}\n"
-            f"Temp: {current_temp}°C (Feels: {feels_like}°C)\n"
-            f"Humidity: {humidity}%\n"
-            f"Wind: {wind_speed} m/s\n"
-            f"{rain_forecast}\n"
-            f"#OpenWeatherMap #{city.replace(' ', '')}Weather"
-        )
-        logging.debug(f"Generated tweet content ({len(my_tweet)} chars): {my_tweet}")
-        return my_tweet
-    else:
-        error_message = f"Weather data for {city} was not provided or is empty."
-        logging.warning(error_message)
-        return f"Could not create tweet for {city} due to missing data."
+    precipitation_status_for_first_line = "0"
+    detailed_rain_description_for_second_line = "No rain expected."
 
-# --- Removed Map Tile Functions ---
-# def deg2num(lat_deg, lon_deg, zoom): ...
-# def get_map_tile_image(lat, lon, zoom=MAP_TILE_ZOOM, layer=MAP_TILE_LAYER): ...
+    if rain_info_api:
+        rain_1h = rain_info_api.get('1h')
+        rain_3h = rain_info_api.get('3h')
+        if rain_1h is not None and rain_1h > 0:
+            precipitation_status_for_first_line = "Active"
+            detailed_rain_description_for_second_line = f"Rain (last 1h): {rain_1h:.2f} mm"
+        elif rain_3h is not None and rain_3h > 0:
+            precipitation_status_for_first_line = "Active"
+            detailed_rain_description_for_second_line = f"Rain (last 3h): {rain_3h:.2f} mm"
+    elif 'rain' in weather_main_info.get('main', '').lower() and not (rain_info_api and (rain_info_api.get('1h') or rain_info_api.get('3h'))):
+        precipitation_status_for_first_line = "Likely"
+        detailed_rain_description_for_second_line = "Light rain indicated."
 
-def tweet_post(tweet_text): # Removed media_id parameter
-    """Posts the tweet to Twitter, or simulates if POST_TO_TWITTER_ENABLED is False."""
+    line_precipitation_status = f"prec:{precipitation_status_for_first_line}%" if precipitation_status_for_first_line == "0" else f"prec:{precipitation_status_for_first_line}"
+    cloudiness_val = clouds_info.get('all')
+    clouds_text_val = f"{cloudiness_val:.0f}" if cloudiness_val is not None else "N/A"
+    line_clouds = f"Clouds:{clouds_text_val}%"
+
+    tweet_lines = [
+        f"Current weather in {city} ({timestamp_str}):",
+        f"Weather Cond: {description_str}",
+        f"Temp:{temp_str}°C (Feels:{feels_like_str}°C)",
+        f"Hum:{humidity_str}%",
+        f"Wind:{wind_str} m/s",
+        line_precipitation_status,
+        detailed_rain_description_for_second_line,
+        line_clouds,
+    ]
+
+    if alerts_api and isinstance(alerts_api, list) and len(alerts_api) > 0:
+        first_alert = alerts_api[0]
+        alert_event = first_alert.get('event', "Weather advisory")
+        max_alert_event_len = 46
+        truncated_alert_event = (alert_event[:max_alert_event_len] + ("..." if len(alert_event) > max_alert_event_len else ""))
+        tweet_lines.append(f"Alert: {truncated_alert_event}")
+
+    tweet_lines.append("#OpenWeatherMap @OpenWeatherMap") # Corrected tag
+    my_tweet = "\n".join(tweet_lines)
+
+    if len(my_tweet) > TWITTER_MAX_CHARS:
+        # print(f"WARNING: Generated tweet (len: {len(my_tweet)}) exceeds {TWITTER_MAX_CHARS} characters.") # Removed logging
+        pass # Or implement truncation here if strictly needed before tweet_post
+
+    return my_tweet
+
+# --- Tweeting Function ---
+def tweet_post(tweet_text):
+    """
+    Posts the given text to Twitter.
+    Handles rate limits with a single retry.
+    Returns True on success, False on failure.
+    """
     if not tweet_text:
-        logging.warning("Tweet text is empty, cannot post.")
         return False
-    if "Could not retrieve weather data" in tweet_text or "Could not create tweet for" in tweet_text:
-        logging.warning(f"Skipping tweet post due to data error: {tweet_text}")
+    if "Could not retrieve weather data" in tweet_text or "Could not generate weather report for" in tweet_text:
         return False
-    if len(tweet_text) > EFFECTIVE_MAX_CHARS:
-        logging.warning(f"Tweet is too long ({len(tweet_text)} chars). Truncating to {EFFECTIVE_MAX_CHARS - 3} chars + '...'.")
-        tweet_text = tweet_text[:EFFECTIVE_MAX_CHARS - 3] + "..."
-        logging.info(f"Truncated tweet: {tweet_text}")
 
-    log_prefix = "[TEST MODE] " if not POST_TO_TWITTER_ENABLED else ""
-    logging.info(f"{log_prefix}Preparing to post tweet: '{tweet_text}'") # Removed media_id from log
+    if len(tweet_text) > TWITTER_MAX_CHARS:
+        tweet_text = tweet_text[:EFFECTIVE_MAX_CHARS - 3] + "..."
+    elif len(tweet_text) > EFFECTIVE_MAX_CHARS:
+        pass # Potentially over effective max, but under absolute; let Twitter handle or adjust logic
 
     if not POST_TO_TWITTER_ENABLED:
-        logging.info(f"{log_prefix}Skipping actual Twitter post as interactions are disabled.")
+        print(f"[TEST MODE] Skipping actual Twitter post. Tweet content:\n{tweet_text}")
         return True
 
     if not bot_api_client:
-        logging.critical("Twitter client not initialized. Cannot post tweet.")
+        # print("CRITICAL: Twitter client not initialized. Cannot post tweet.") # Removed logging
         return False
-        
+
     try:
-        bot_api_client.create_tweet(text=tweet_text) # Simplified create_tweet call
-        logging.info("Tweet posted successfully to Twitter!")
+        bot_api_client.create_tweet(text=tweet_text)
+        # print("INFO: Tweet posted successfully to Twitter!") # Removed logging
         return True
     except tweepy.TooManyRequests as err:
-        logging.warning(f"Rate limit exceeded: {err}")
+        # print(f"WARNING: Rate limit exceeded: {err}") # Removed logging
         retry_after_seconds = DEFAULT_RATE_LIMIT_WAIT_SECONDS
         if err.response is not None and err.response.headers:
             x_rate_limit_reset_header = err.response.headers.get('x-rate-limit-reset')
@@ -190,111 +203,109 @@ def tweet_post(tweet_text): # Removed media_id parameter
             if x_rate_limit_reset_header:
                 try:
                     reset_timestamp = int(x_rate_limit_reset_header)
-                    current_timestamp = int(time.time())
-                    wait_seconds = max(0, reset_timestamp - current_timestamp) + 5
+                    current_timestamp_epoch = int(time.time())
+                    wait_seconds = max(0, reset_timestamp - current_timestamp_epoch) + 5
                     retry_after_seconds = wait_seconds
-                except ValueError: logging.warning(f"Could not parse x-rate-limit-reset header: {x_rate_limit_reset_header}")
+                except ValueError: pass # Silently use default
             elif retry_after_header:
                 try: retry_after_seconds = int(retry_after_header) + 5
-                except ValueError: logging.warning(f"Could not parse Retry-After header: {retry_after_header}")
+                except ValueError: pass # Silently use default
         
-        logging.info(f"Rate limit: Waiting for {retry_after_seconds:.0f} seconds before retrying...")
+        # print(f"INFO: Rate limit: Waiting for {retry_after_seconds:.0f} seconds before retrying...") # Removed logging
         time.sleep(retry_after_seconds)
         try:
-            logging.info(f"Retrying to post tweet: {tweet_text}") # Removed media_id from log
-            bot_api_client.create_tweet(text=tweet_text) # Simplified create_tweet call
-            logging.info("Tweet posted successfully after waiting!")
+            bot_api_client.create_tweet(text=tweet_text)
+            # print("INFO: Tweet posted successfully after waiting!") # Removed logging
             return True
         except tweepy.TweepyException as retry_err:
-            logging.error(f"Error posting tweet after waiting and retry: {retry_err}")
-            if retry_err.response is not None: logging.error(f"Retry Response Text: {retry_err.response.text}")
+            # print(f"ERROR: Error posting tweet after waiting and retry: {retry_err}") # Removed logging
+            # if retry_err.response is not None: print(f"ERROR: Retry Response Text: {retry_err.response.text}") # Removed logging
             return False
-        except Exception as e_retry:
-            logging.error(f"An unexpected error occurred during retry tweeting: {e_retry}")
+        except Exception: # Catch any other unexpected error during retry
             return False
     except tweepy.TweepyException as err:
-        logging.error(f"Error posting tweet: {err}")
-        if err.response is not None: logging.error(f"Twitter API Response Text: {err.response.text}")
-        if hasattr(err, 'api_errors') and err.api_errors: logging.error(f"Twitter API Errors Detail: {err.api_errors}")
-        if hasattr(err, 'api_codes') and err.api_codes: logging.error(f"Twitter API Codes: {err.api_codes}")
+        # print(f"ERROR: Error posting tweet: {err}") # Removed logging
+        # if hasattr(err, 'response') and err.response is not None:
+        #     print(f"ERROR: Twitter API Response Status: {err.response.status_code}") # Removed logging
+        #     print(f"ERROR: Twitter API Response Text: {err.response.text}") # Removed logging
         return False
-    except Exception as e:
-        logging.error(f"An unexpected error occurred during tweeting: {e}")
+    except Exception: # Catch any other unexpected error
         return False
     return False
 
+
 # --- Task to be Performed on HTTP Request ---
 def perform_scheduled_tweet_task():
-    # Modified client check
-    if not bot_api_client:
-        if not POST_TO_TWITTER_ENABLED:
-            logging.warning("[TEST MODE] Twitter client might not be fully available, but continuing in test mode.")
-        else:
-            logging.error("Cannot perform tweet task: Twitter client (v2) not properly initialized.")
-            return False
+    """
+    Main task to fetch weather, create a tweet, and post it.
+    Returns True if the task was successful (or simulated successfully), False otherwise.
+    """
+    if not bot_api_client and POST_TO_TWITTER_ENABLED:
+        # print("ERROR: Cannot perform tweet task: Twitter client v2 not properly initialized and in LIVE mode.") # Removed logging
+        return False
 
-    now_in_india = datetime.now(pytz.timezone('Asia/Kolkata'))
-    logging.info(f"--- Running weather tweet job for {CITY_TO_MONITOR} at {now_in_india.strftime('%I:%M %p %Z%z')} ---")
+    # bot_operational_tz = pytz.timezone('Asia/Kolkata') # Already defined in create_weather_tweet_from_data
+    # now_for_log = datetime.now(bot_operational_tz) # Logging removed
+    # print(f"--- Running weather tweet job for {CITY_TO_MONITOR} at {now_for_log.strftime('%H:%M %Z, %b %d %Y')} ---") # Logging removed
 
     weather_data = get_weather(CITY_TO_MONITOR)
     if not weather_data:
-        logging.warning(f"Could not retrieve weather data for {CITY_TO_MONITOR}. Aborting tweet task.")
+        # print(f"WARNING: Could not retrieve weather data for {CITY_TO_MONITOR}. Aborting tweet task.") # Removed logging
         return False
 
     weather_tweet_content = create_weather_tweet_from_data(CITY_TO_MONITOR, weather_data)
-    if "Could not create tweet for" in weather_tweet_content or not weather_tweet_content:
-        logging.warning(f"Failed to generate tweet content: {weather_tweet_content}")
+    if "Could not generate weather report for" in weather_tweet_content or not weather_tweet_content:
+        # print(f"WARNING: Failed to generate tweet content: {weather_tweet_content}") # Removed logging
         return False
 
-    # --- Removed map tile fetching and media upload logic ---
-    # media_id_str = None
-    # log_prefix = "[TEST MODE] " if not POST_TO_TWITTER_ENABLED else ""
-    # if 'coord' in weather_data:
-    # ... entire block removed ...
+    success = tweet_post(weather_tweet_content)
+
+    # if success:
+    #     log_message_suffix = "(simulation)." if not POST_TO_TWITTER_ENABLED else "and posted to Twitter."
+    #     print(f"INFO: Tweet task for {CITY_TO_MONITOR} completed successfully {log_message_suffix}") # Logging removed
     # else:
-    # logging.warning("Coordinates not available in weather data, cannot fetch map tile.")
-    # --- End of removed block ---
-
-    success = tweet_post(weather_tweet_content) # Call without media_id_str
-
-    log_prefix = "[TEST MODE] " if not POST_TO_TWITTER_ENABLED else "" # Keep for consistent logging
-    if success:
-        if not POST_TO_TWITTER_ENABLED:
-            logging.info(f"{log_prefix}Tweet task for {CITY_TO_MONITOR} completed successfully (simulation).")
-        else:
-            logging.info(f"Tweet task for {CITY_TO_MONITOR} completed successfully and posted to Twitter.")
-    else:
-        logging.warning(f"{log_prefix}Tweet task for {CITY_TO_MONITOR} did not complete successfully (tweet might have been skipped or failed).")
+    #     log_prefix = "[TEST MODE] " if not POST_TO_TWITTER_ENABLED else ""
+    #     print(f"WARNING: {log_prefix}Tweet task for {CITY_TO_MONITOR} did not complete successfully (tweet might have been skipped or failed).") # Logging removed
     return success
 
 # --- Flask Routes ---
 @app.route('/')
 def home():
     mode = "LIVE MODE - Twitter interactions ENABLED" if POST_TO_TWITTER_ENABLED else "TEST MODE - Twitter interactions DISABLED"
-    logging.info(f"Home endpoint '/' pinged. Current mode: {mode}")
-    # Updated message to remove "with Map Tile"
+    # print(f"Home endpoint '/' pinged. Current mode: {mode}") # Logging removed
     return f"Weather Tweet Bot is alive! Current mode: {mode}", 200
 
 @app.route('/run-tweet-task', methods=['POST', 'GET'])
 def run_tweet_task_endpoint():
-    logging.info("'/run-tweet-task' endpoint called.")
-    
+    # print("INFO: '/run-tweet-task' endpoint called.") # Logging removed
+
     try:
-        get_env_variable("WEATHER_API_KEY") 
+        get_env_variable("WEATHER_API_KEY") # Check if critical key exists
     except EnvironmentError:
-        logging.error("Tweet task cannot run: WEATHER_API_KEY is missing.")
+        # print("ERROR: Tweet task cannot run: WEATHER_API_KEY is missing.") # Logging removed
         return "Tweet task failed due to missing WEATHER_API_KEY.", 500
-    
+
     success = perform_scheduled_tweet_task()
     mode_info = "(Simulated)" if not POST_TO_TWITTER_ENABLED else "(Live)"
 
     if success:
         return f"Tweet task executed {mode_info}. Outcome: Posted successfully or simulated successfully.", 200
     else:
-        return f"Tweet task attempted {mode_info}. Outcome: Check logs (may have failed or been skipped).", 202
+        # For 202, it implies accepted but not completed, or an issue occurred.
+        # Since we know the outcome from `success`, we can be more specific.
+        # If it failed, a 500 or other appropriate error might be better if it's a server-side failure.
+        # However, if it's "skipped" (e.g. data error), 202 or 200 with a specific message is okay.
+        # Let's stick to 202 if not fully successful to indicate "processed, but check outcome".
+        return f"Tweet task attempted {mode_info}. Outcome: Failed, skipped, or an error occurred. Check application output if available.", 202
 
-# --- Main Execution for Cloud Run ---
+# --- Main Execution for Cloud Run (or local Flask dev server) ---
 if __name__ == "__main__":
+    # For local development, you might want to load .env variables if you use python-dotenv
+    # from dotenv import load_dotenv
+    # load_dotenv()
+
     app_port = int(os.environ.get("PORT", 8080))
-    logging.info(f"--- Starting WeatherAppBot Flask Server on port {app_port} ---")
-    app.run(host='0.0.0.0', port=app_port)
+    print(f"--- Starting Weather Tweet Bot Flask Server on port {app_port} ---")
+    # For production, use a WSGI server like gunicorn.
+    # Example: gunicorn --bind 0.0.0.0:8080 main:app
+    app.run(host='0.0.0.0', port=app_port, debug=False)
