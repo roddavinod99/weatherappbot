@@ -128,7 +128,7 @@ def create_weather_tweet_from_data(city, weather_data):
         f"Wind: {wind_str}",
         f"Clouds: {cloudiness_str}",
         precipitation_status,
-        "#OpenWeatherMap @OpenWeatherMap"
+        "#OpenWeatherMap #Gachibowli"
     ]
 
     my_tweet = "\n".join(tweet_lines)
