@@ -16,4 +16,5 @@ COPY . .
 
 # Set the command to run your app using Gunicorn
 # The PORT environment variable is automatically set by Cloud Run.
-CMD ["gunicorn", "--bind", "0.0.0.0:$PORT", "main:app"]
+# NEW, CORRECT LINE - USE THIS INSTEAD
+CMD ["/bin/sh", "-c", "gunicorn --bind 0.0.0.0:$PORT WeatherAppBot:app"]
