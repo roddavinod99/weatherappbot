@@ -3,4 +3,3 @@ requests
 pytz
 Flask
 gunicorn
-Pillow
