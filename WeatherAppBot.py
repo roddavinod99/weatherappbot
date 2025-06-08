@@ -8,18 +8,12 @@ from flask import Flask
 import logging
 
 # --- Configuration ---
-# It's good practice to use standard logging, which integrates with Google Cloud's operations suite.
+# Standard logging, which integrates with Google Cloud's operations suite.
 logging.basicConfig(level=logging.INFO)
 
 # --- Constants ---
 TWITTER_MAX_CHARS = 280
-TWEET_BUFFER = 15  # For links or Twitter's own additions
-EFFECTIVE_MAX_CHARS = TWITTER_MAX_CHARS - TWEET_BUFFER
-DEFAULT_RATE_LIMIT_WAIT_SECONDS = 15 * 60
-CITY_TO_MONITOR = "Gachibowli" # << City is set here
-
-# --- Test Mode Configuration ---
-# Defaults to "true" if the environment variable is not set or is not "false"
+CITY_TO_MONITOR = "Gachibowli"  # << City is set here
 POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "true").lower() == "true"
 
 if not POST_TO_TWITTER_ENABLED:
@@ -29,11 +23,9 @@ else:
     logging.info("Twitter interactions ARE ENABLED. Tweets will be posted to Twitter.")
 
 # --- Flask App Initialization ---
-# This creates a Flask web server application.
-# On Cloud Run, this app will only be active when handling a request.
 app = Flask(__name__)
 
-# --- Helper Function for Environment Variables ---
+# --- Helper Functions ---
 def get_env_variable(var_name, critical=True):
     """
     Retrieves an environment variable.
@@ -44,9 +36,16 @@ def get_env_variable(var_name, critical=True):
         raise EnvironmentError(f"Critical environment variable '{var_name}' not found.")
     return value
 
+def degrees_to_cardinal(d):
+    """Converts wind direction in degrees to a cardinal direction."""
+    dirs = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
+    ix = int((d + 11.25) / 22.5)
+    return dirs[ix % 16]
+
 # --- Initialize Twitter API Client ---
 bot_api_client = None
 try:
+    # It's recommended to keep these checks to ensure the service can start up correctly.
     bearer_token = get_env_variable("TWITTER_BEARER_TOKEN")
     consumer_key = get_env_variable("TWITTER_API_KEY")
     consumer_secret = get_env_variable("TWITTER_API_SECRET")
@@ -78,7 +77,7 @@ def get_weather(city):
         logging.error("WEATHER_API_KEY not found. Cannot fetch weather.")
         return None
 
-    url = f'https://api.openweathermap.org/data/2.5/weather?q={city}&appid={weather_api_key}&units=metric'
+    url = f'https://api.openweathermap.org/data/2.5/weather?q={city},IN&appid={weather_api_key}&units=metric'
     try:
         weather_response = requests.get(url, timeout=10)
         weather_response.raise_for_status()  # Raises HTTPError for bad responses
@@ -89,50 +88,67 @@ def get_weather(city):
 
 def create_weather_tweet_from_data(city, weather_data):
     """
-    Formats weather data into a tweet string.
+    Formats weather data into a tweet string based on the new template.
     """
     if not weather_data:
         return f"Could not generate weather report for {city}: Data missing."
 
+    # --- Extract data from API response ---
     weather_main_info = weather_data.get('weather', [{}])[0]
     main_conditions = weather_data.get('main', {})
     wind_conditions = weather_data.get('wind', {})
     rain_info_api = weather_data.get('rain', {})
-    clouds_info = weather_data.get('clouds', {})
-    alerts_api = weather_data.get('alerts')
 
-    bot_operational_tz = pytz.timezone('Asia/Kolkata')
-    now_for_tweet_header = datetime.now(bot_operational_tz)
-    timestamp_str = now_for_tweet_header.strftime('%H:%M, %b %d, %Y')
+    # --- Get current day for the greeting ---
+    current_day = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%A')
 
-    description_str = weather_main_info.get('description', "N/A").capitalize()
-    temp_str = f"{main_conditions.get('temp'):.2f}°C" if main_conditions.get('temp') is not None else "N/A"
-    feels_like_str = f"{main_conditions.get('feels_like'):.2f}°C" if main_conditions.get('feels_like') is not None else "N/A"
-    humidity_str = f"{main_conditions.get('humidity'):.0f}%" if main_conditions.get('humidity') is not None else "N/A"
-    wind_str = f"{wind_conditions.get('speed'):.2f} m/s" if wind_conditions.get('speed') is not None else "N/A"
-    cloudiness_str = f"{clouds_info.get('all'):.0f}%" if clouds_info.get('all') is not None else "N/A"
+    # --- Format individual weather components ---
+    sky_description = weather_main_info.get('description', "N/A").title()
+    temp_celsius = main_conditions.get('temp', 0)
+    feels_like_celsius = main_conditions.get('feels_like', 0)
+    temp_str = f"{temp_celsius:.0f}°C(feels: {feels_like_celsius:.0f}°C)"
 
-    precipitation_status = "No rain expected."
-    if rain_info_api:
-        rain_1h = rain_info_api.get('1h')
-        if rain_1h is not None and rain_1h > 0:
-            precipitation_status = f"Rain (last 1h): {rain_1h:.2f} mm"
-        else: # If 'rain' object exists but is empty, it may indicate light showers
-            precipitation_status = "Light rain possible."
+    humidity = main_conditions.get('humidity', 0)
+    humidity_str = f"{humidity:.0f}%"
 
+    wind_speed_ms = wind_conditions.get('speed', 0)
+    wind_speed_kmh = wind_speed_ms * 3.6
+    wind_direction_deg = wind_conditions.get('deg', 0)
+    wind_direction_cardinal = degrees_to_cardinal(wind_direction_deg)
+    wind_str = f"{wind_speed_kmh:.0f} km/h from the {wind_direction_cardinal}"
+
+    # --- Dynamic Rain Forecast ---
+    rain_1h = rain_info_api.get('1h', 0)
+    if rain_1h > 0:
+        rain_forecast = f"☔ Rain Alert: {rain_1h:.2f} mm of rain in the last hour."
+    else:
+        rain_forecast = "☔ No Rain Expected"
+
+    # --- Dynamic Closing Message ---
+    if rain_1h > 0.5: # Threshold for a more assertive rain message
+        closing_message = "Stay dry out there! 🌧️"
+    elif temp_celsius > 35:
+        closing_message = "It's a hot one! Stay cool and hydrated. ☀️"
+    elif temp_celsius < 18:
+        closing_message = "Brr, it's cool! Consider a light jacket. 🧣"
+    else:
+        closing_message = "Enjoy your day! 😊"
+
+    # --- Assemble the tweet ---
     tweet_lines = [
-        f"Weather in {city} ({timestamp_str}):",
-        f"Cond: {description_str}",
-        f"Temp: {temp_str} (Feels like: {feels_like_str})",
-        f"Humidity: {humidity_str}",
-        f"Wind: {wind_str}",
-        f"Clouds: {cloudiness_str}",
-        precipitation_status,
-        "#OpenWeatherMap #Gachibowli"
+        f"Hello, {city}! 👋 Your {current_day} weather check-in:",
+        f"☁️ Sky: {sky_description}",
+        f"🌡️ Temp: {temp_str}",
+        f"💧 Humidity: {humidity_str}",
+        f"💨 Wind: {wind_str}",
+        rain_forecast,
+        "",  # For a line break
+        closing_message,
+        f"#{city} #Hyderabad #WeatherUpdate"
     ]
 
-    my_tweet = "\n".join(tweet_lines)
-    return my_tweet
+    return "\n".join(tweet_lines)
+
 
 # --- Tweeting Function ---
 def tweet_post(tweet_text):
@@ -147,28 +163,26 @@ def tweet_post(tweet_text):
         return False
 
     if len(tweet_text) > TWITTER_MAX_CHARS:
-        logging.warning("Tweet is too long, truncating...")
-        tweet_text = tweet_text[:EFFECTIVE_MAX_CHARS] + "..."
+        logging.warning(f"Tweet is too long ({len(tweet_text)} chars). It may be truncated by Twitter.")
+        # We let the API handle potential truncation instead of cutting it off ourselves
+        # to preserve the closing message and hashtags.
 
     try:
         bot_api_client.create_tweet(text=tweet_text)
         logging.info("Tweet posted successfully to Twitter!")
         return True
-    except tweepy.TooManyRequests as err:
-        logging.warning(f"Rate limit exceeded: {err}. Will not retry in this serverless model.")
-        # In a serverless function, it's often better to fail fast and let the next scheduled run handle it,
-        # rather than waiting and holding the instance active.
+    except tweepy.errors.TooManyRequests:
+        logging.warning("Rate limit exceeded. Will not retry in this serverless model.")
         return False
-    except tweepy.TweepyException as err:
+    except tweepy.errors.TweepyException as err:
         logging.error(f"Error posting tweet: {err}")
         return False
-    return False
+
 
 # --- Core Task Logic ---
 def perform_scheduled_tweet_task():
     """
     Main task to fetch weather, create a tweet, and post it.
-    This is the core logic that will be executed on each scheduled run.
     """
     logging.info(f"--- Running weather tweet job for {CITY_TO_MONITOR} ---")
 
@@ -187,8 +201,6 @@ def perform_scheduled_tweet_task():
     return success
 
 # --- Flask Routes ---
-# These endpoints allow Cloud Run to receive HTTP requests.
-
 @app.route('/')
 def home():
     """A simple endpoint to check if the service is alive."""
@@ -198,8 +210,7 @@ def home():
 @app.route('/run-tweet-task', methods=['POST', 'GET'])
 def run_tweet_task_endpoint():
     """
-    This is the main endpoint that Cloud Scheduler will call.
-    It triggers the tweet-posting task.
+    This is the main endpoint that a scheduler will call to trigger the tweet-posting task.
     """
     logging.info("'/run-tweet-task' endpoint triggered by a request.")
     success = perform_scheduled_tweet_task()
@@ -207,17 +218,13 @@ def run_tweet_task_endpoint():
         return "Tweet task executed successfully.", 200
     else:
         # Return a non-200 status to indicate the task may not have completed.
-        # This can be useful for monitoring in Cloud Scheduler.
         return "Tweet task execution failed or was skipped.", 500
 
-# --- Main Execution Block ---
-# This block is used for local development.
-# When deployed to Cloud Run, a Gunicorn server is used to run the 'app' object directly,
-# so this part of the code will not be executed.
+# --- Main Execution Block for Local Development ---
 if __name__ == "__main__":
-    # The following line is for running the app locally for testing
-    # e.g., python main.py
-    # You would then open a browser to http://localhost:8080/run-tweet-task
+    # This block allows you to run the app locally for testing
+    # e.g., using 'python your_file_name.py'
+    # You would then trigger the task by navigating to http://localhost:8080/run-tweet-task
     app_port = int(os.environ.get("PORT", 8080))
     logging.info(f"--- Starting Flask Server for local development on port {app_port} ---")
     app.run(host='0.0.0.0', port=app_port, debug=True)
