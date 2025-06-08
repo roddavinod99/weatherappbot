@@ -117,8 +117,8 @@ def create_weather_tweet_content(city, weather_data):
     wind_conditions = weather_data.get('wind', {})
     rain_info_api = weather_data.get('rain', {})
     
-    bot_operational_tz = pytz.timezone('Asia/Kolkata')
-    current_day = datetime.now(bot_operational_tz).strftime('%A')
+    now = datetime.now(pytz.timezone('Asia/Kolkata'))
+    current_day = now.strftime('%A')
 
     sky_description = weather_main_info.get('description', "N/A").title()
     temp_celsius = main_conditions.get('temp', 0)
@@ -137,8 +137,13 @@ def create_weather_tweet_content(city, weather_data):
     else: closing_message = "Enjoy your day! 😊"
 
     # --- Assemble tweet content ---
+    # MODIFIED GREETING LINE
+    time_str = now.strftime("%I:%M %p") # e.g., 08:00 PM
+    date_str = f"{now.day} {now.strftime('%B')}" # e.g., 8 June
+    greeting_line = f"Hello, {city}!👋, {current_day} weather as of {date_str}, {time_str}:"
+
     tweet_lines = [
-        f"Hello, {city}! 👋 Your {current_day} weather check-in:",
+        greeting_line,
         f"☁️ Sky: {sky_description}",
         f"🌡️ Temp: {temp_celsius:.0f}°C(feels: {feels_like_celsius:.0f}°C)",
         f"💧 Humidity: {humidity:.0f}%",
