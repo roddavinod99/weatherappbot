@@ -1,6 +1,5 @@
-Flask
-requests
-playwright
 tweepy
-gunicorn
+requests
 pytz
+Flask
+gunicorn
