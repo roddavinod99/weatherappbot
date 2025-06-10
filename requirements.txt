@@ -2,3 +2,5 @@ Flask
 requests
 playwright
 tweepy
+gunicorn
+pytz
