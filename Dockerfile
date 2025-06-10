@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libxrandr2 \
     libxrender1 \
-    libxshmfence6 \
+    libxshmfence1 \
     libxtst6 \
     xdg-utils \
     --no-install-recommends \
