@@ -1,5 +1,4 @@
-tweepy
-requests
-pytz
 Flask
-gunicorn
+requests
+playwright
+tweepy
