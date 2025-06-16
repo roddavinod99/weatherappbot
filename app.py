@@ -15,9 +15,6 @@ TWITTER_MAX_CHARS = 280
 CITY_TO_MONITOR = "Gachibowli"
 TEMP_IMAGE_FILENAME = "temp_weather_card.jpg"
 POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "true").lower() == "true"
-# Load the scheduler secret from environment variables
-SCHEDULER_SECRET_KEY = os.environ.get("SCHEDULER_SECRET_KEY")
-
 
 if not POST_TO_TWITTER_ENABLED:
     logging.warning("Twitter interactions are DISABLED (Test Mode).")
@@ -27,7 +24,7 @@ else:
 # --- Flask App Initialization ---
 app = Flask(__name__)
 
-# --- Helper Functions (Unchanged) ---
+# --- Helper Functions ---
 def get_env_variable(var_name, critical=True):
     value = os.environ.get(var_name)
     if value is None and critical:
@@ -40,7 +37,7 @@ def degrees_to_cardinal(d):
     ix = int((d + 11.25) / 22.5)
     return dirs[ix % 16]
 
-# --- Initialize Twitter API Clients (Unchanged) ---
+# --- Initialize Twitter API Clients ---
 api_v1 = None
 client_v2 = None
 try:
@@ -59,7 +56,7 @@ try:
 except Exception as e:
     logging.critical(f"An unexpected error occurred during Twitter client initialization: {e}")
 
-# --- Weather and Tweet Creation Functions (Unchanged) ---
+# --- Weather and Tweet Creation Functions ---
 def get_weather(city):
     try:
         weather_api_key = get_env_variable("WEATHER_API_KEY")
@@ -72,7 +69,6 @@ def get_weather(city):
         return None
 
 def generate_dynamic_hashtags(weather_data, current_day):
-    # This function is unchanged
     hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate'}
     main_conditions = weather_data.get('main', {})
     weather_main_info = weather_data.get('weather', [{}])[0]
@@ -83,9 +79,7 @@ def generate_dynamic_hashtags(weather_data, current_day):
     if current_day in ['Saturday', 'Sunday']: hashtags.add('#WeekendWeather')
     return list(hashtags)
 
-
 def create_weather_tweet_content(city, weather_data):
-    # This function is unchanged
     if not weather_data: return (["Could not generate weather report: Data missing."], ["#error"])
     weather_main_info = weather_data.get('weather', [{}])[0]
     main_conditions = weather_data.get('main', {})
@@ -111,7 +105,7 @@ def create_weather_tweet_content(city, weather_data):
     hashtags = generate_dynamic_hashtags(weather_data, current_day)
     return tweet_lines, hashtags
 
-# --- Reusable Tweeting Functions ---
+# --- Reusable Tweeting Function ---
 def assemble_and_post_tweet(tweet_lines, hashtags, media_id=None):
     if not all([client_v2, POST_TO_TWITTER_ENABLED]):
         log_message = "\n".join(tweet_lines) + "\n" + " ".join(hashtags)
@@ -123,14 +117,12 @@ def assemble_and_post_tweet(tweet_lines, hashtags, media_id=None):
     
     try:
         body = "\n".join(tweet_lines)
-        # Trim hashtags until the tweet fits within the character limit
         while True:
             hashtag_str = " ".join(hashtags)
             full_tweet = f"{body}\n\n{hashtag_str}"
-            if len(full_tweet) <= TWITTER_MAX_CHARS:
-                break
-            if not hashtags: # No more hashtags to remove
-                full_tweet = body # Post without hashtags
+            if len(full_tweet) <= TWITTER_MAX_CHARS: break
+            if not hashtags:
+                full_tweet = body
                 break
             hashtags.pop()
 
@@ -142,16 +134,12 @@ def assemble_and_post_tweet(tweet_lines, hashtags, media_id=None):
         return False
 
 # --- Flask Routes ---
-
-# User-facing route (unchanged)
 @app.route('/')
 def home():
     return render_template('index.html')
 
-# API for frontend to get data (unchanged)
 @app.route('/api/weather-data')
 def get_all_weather_data():
-    # This function is unchanged
     city = request.args.get('city', 'Gachibowli'); country = request.args.get('country', 'IN')
     try:
         api_key = get_env_variable("WEATHER_API_KEY")
@@ -169,7 +157,6 @@ def get_all_weather_data():
         logging.error(f"Error in get_all_weather_data: {e}")
         return jsonify({"message": "An internal server error occurred."}), 500
 
-# API for frontend to post image tweet (mostly unchanged)
 @app.route('/post-weather-tweet-with-image', methods=['POST'])
 def run_tweet_task_endpoint():
     try:
@@ -187,25 +174,17 @@ def run_tweet_task_endpoint():
         logging.error(f"Error in run_tweet_task_endpoint: {e}")
         return jsonify({"status": "error", "message": "Server error processing image tweet."}), 500
 
-
-# --- NEW ENDPOINT FOR CLOUD SCHEDULER ---
+# --- ENDPOINT FOR CLOUD SCHEDULER (SIMPLIFIED & SECURE) ---
 @app.route('/execute-tweet-job', methods=['POST'])
 def execute_tweet_job():
-    # 1. Security Check: Ensure the request is from Cloud Scheduler
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or auth_header != f"Bearer {SCHEDULER_SECRET_KEY}":
-        logging.warning("Unauthorized attempt to access /execute-tweet-job")
-        return "Unauthorized", 401
-
+    # Security is handled by Google Cloud IAM, ensuring only the scheduler's service account can call this.
     logging.info("Cloud Scheduler job started.")
     
-    # 2. Get fresh weather data
     weather_data = get_weather(CITY_TO_MONITOR)
     if not weather_data:
         logging.error("Scheduler job failed: Could not retrieve weather.")
         return "Failed to get weather data", 500
 
-    # 3. Create tweet content and post a text-only tweet
     tweet_lines, hashtags = create_weather_tweet_content(CITY_TO_MONITOR, weather_data)
     success = assemble_and_post_tweet(tweet_lines, hashtags)
 

@@ -15,5 +15,4 @@ COPY . .
 
 # Run the web server with Gunicorn
 # It will listen on the port provided by Cloud Run ($PORT)
-# The timeout is increased to handle potentially slow image generation and tweeting
 CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 300 app:app
