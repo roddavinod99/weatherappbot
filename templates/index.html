@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Card - Gachibowli</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0c0c1e;
+        }
+        .hourly-forecast-container::-webkit-scrollbar { height: 6px; }
+        .hourly-forecast-container::-webkit-scrollbar-track { background: #e0e7ff; border-radius: 10px; }
+        .hourly-forecast-container::-webkit-scrollbar-thumb { background: #818cf8; border-radius: 10px; }
+        .weather-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            position: relative;
+            overflow: hidden;
+        }
+        .animated-bg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        .content-wrapper { position: relative; z-index: 2; }
+        .bg-day .animated-bg {
+            background: linear-gradient(135deg, #89f7fe, #66a6ff, #fbc2eb);
+            background-size: 400% 400%;
+            animation: gradient-animation 20s ease infinite;
+        }
+        @keyframes gradient-animation {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        .bg-night .animated-bg { background: linear-gradient(135deg, #020111 0%, #3a3a52 100%); }
+        .star { position: absolute; background-color: white; border-radius: 50%; animation: twinkle linear infinite; }
+        @keyframes twinkle {
+            0%, 100% { opacity: 0; transform: scale(0.5); }
+            50% { opacity: 1; transform: scale(1); }
+        }
+        #notification-banner {
+            position: fixed;
+            bottom: -100px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 1rem 2rem;
+            border-radius: 0.5rem;
+            color: white;
+            font-weight: 500;
+            transition: bottom 0.5s ease-in-out;
+            z-index: 1000;
+        }
+        #notification-banner.show {
+            bottom: 20px;
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+
+    <div id="weather-card-container" class="weather-card w-full max-w-4xl mx-auto rounded-3xl shadow-2xl text-white">
+        <div id="animated-bg-layer" class="animated-bg"></div>
+
+        <div class="content-wrapper p-6 md:p-8">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
+                <div>
+                    <h1 id="location-name" class="text-3xl md:text-4xl font-bold">Loading...</h1>
+                    <p id="location-region-country" class="text-lg opacity-80"></p>
+                </div>
+                <div class="text-right mt-4 md:mt-0">
+                    <p id="local-time" class="text-lg font-medium"></p>
+                    <p id="last-updated" class="text-sm opacity-70"></p>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="lg:col-span-1 bg-white/20 p-6 rounded-2xl flex flex-col items-center justify-center text-center">
+                    <p class="text-lg font-semibold mb-2">Now</p>
+                    <img id="current-condition-icon" src="https://placehold.co/128x128/FFFFFF/333333?text=..." alt="Weather Icon" class="w-24 h-24 md:w-32 md:h-32 -my-2">
+                    <p id="current-condition-text" class="text-xl font-medium capitalize mb-2"></p>
+                    <p id="current-temp" class="text-6xl md:text-7xl font-bold"></p>
+                    <p class="text-md opacity-80 mt-2">Feels like <span id="feels-like-temp"></span></p>
+                    <div class="w-full h-[1px] bg-white/20 my-4"></div>
+                    <div class="flex justify-around w-full text-center">
+                        <div>
+                            <p class="text-sm opacity-80">Max</p>
+                            <p id="max-temp" class="font-semibold text-lg"></p>
+                        </div>
+                        <div>
+                            <p class="text-sm opacity-80">Min</p>
+                            <p id="min-temp" class="font-semibold text-lg"></p>
+                        </div>
+                    </div>
+                </div>
+                <div class="lg:col-span-2 space-y-6">
+                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-center">
+                        <div class="bg-white/20 p-4 rounded-xl flex flex-col items-center justify-center"><i class="fas fa-wind text-xl mb-2 opacity-70"></i><p class="font-semibold">Wind</p><p id="wind-speed" class="text-lg"></p><p id="wind-direction" class="text-sm opacity-80"></p></div>
+                        <div class="bg-white/20 p-4 rounded-xl flex flex-col items-center justify-center"><i class="fas fa-tint text-xl mb-2 opacity-70"></i><p class="font-semibold">Humidity</p><p id="humidity" class="text-lg"></p></div>
+                        <div class="bg-white/20 p-4 rounded-xl flex flex-col items-center justify-center"><i class="fas fa-cloud-rain text-xl mb-2 opacity-70"></i><p class="font-semibold">Rain Chance</p><p id="rain-chance" class="text-lg"></p></div>
+                        <div class="bg-white/20 p-4 rounded-xl flex flex-col items-center justify-center"><i class="fas fa-tachometer-alt text-xl mb-2 opacity-70"></i><p class="font-semibold">Pressure</p><p id="pressure" class="text-lg"></p></div>
+                        <div class="bg-white/20 p-4 rounded-xl flex flex-col items-center justify-center"><i class="fas fa-eye text-xl mb-2 opacity-70"></i><p class="font-semibold">Visibility</p><p id="visibility" class="text-lg"></p></div>
+                        <div class="bg-white/20 p-4 rounded-xl flex flex-col items-center justify-center"><i class="fas fa-cloud text-xl mb-2 opacity-70"></i><p class="font-semibold">Cloudiness</p><p id="cloudiness" class="text-lg"></p></div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 text-center">
+                         <div class="bg-white/20 p-3 rounded-xl flex flex-col items-center justify-center"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mb-1 text-orange-300 h-6 w-6"><path d="M12 2v8"></path><path d="m4.93 10.93 1.41 1.41"></path><path d="M2 18h2"></path><path d="M20 18h2"></path><path d="m19.07 10.93-1.41 1.41"></path><path d="M22 22H2"></path><path d="m8 6 4-4 4 4"></path><path d="M16 18a4 4 0 0 0-8 0"></path></svg><p class="text-sm font-medium">Sunrise</p><p id="sunrise" class="font-semibold"></p></div>
+                         <div class="bg-white/20 p-3 rounded-xl flex flex-col items-center justify-center"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mb-1 text-amber-400 h-6 w-6"><path d="M12 10V2"></path><path d="m4.93 10.93 1.41 1.41"></path><path d="M2 18h2"></path><path d="M20 18h2"></path><path d="m19.07 10.93-1.41 1.41"></path><path d="M22 22H2"></path><path d="m16 2-4 4-4-4"></path><path d="M16 18a4 4 0 0 0-8 0"></path></svg><p class="text-sm font-medium">Sunset</p><p id="sunset" class="font-semibold"></p></div>
+                    </div>
+                    <div class="bg-white/20 p-4 rounded-xl">
+                        <div class="flex justify-between items-baseline mb-2">
+                            <h3 class="font-semibold text-lg">Air Quality</h3>
+                            <p id="air-quality-index" class="font-bold text-lg px-3 py-1 rounded-full"></p>
+                        </div>
+                        <div class="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-xs">
+                            <div class="bg-white/10 p-2 rounded-lg"><p class="font-bold">CO</p><span id="aq-co"></span></div><div class="bg-white/10 p-2 rounded-lg"><p class="font-bold">NO₂</p><span id="aq-no2"></span></div>
+                            <div class="bg-white/10 p-2 rounded-lg"><p class="font-bold">O₃</p><span id="aq-o3"></span></div><div class="bg-white/10 p-2 rounded-lg"><p class="font-bold">SO₂</p><span id="aq-so2"></span></div>
+                            <div class="bg-white/10 p-2 rounded-lg"><p class="font-bold">PM2.5</p><span id="aq-pm2_5"></span></div><div class="bg-white/10 p-2 rounded-lg"><p class="font-bold">PM10</p><span id="aq-pm10"></span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-8">
+                <h3 class="font-semibold text-lg mb-3 text-center">Hourly Forecast</h3>
+                <div class="hourly-forecast-container flex justify-center space-x-4 overflow-x-auto pb-3"></div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="notification-banner"></div>
+
+    <script>
+        const city = 'Gachibowli';
+        const countryCode = 'IN';
+
+        function showNotification(message, isError = false) {
+            const banner = document.getElementById('notification-banner');
+            banner.textContent = message;
+            banner.className = `fixed bottom-[-100px] left-1/2 -translate-x-1/2 px-8 py-4 rounded-lg text-white font-medium transition-all duration-500 ease-in-out z-[1000] ${isError ? 'bg-red-500' : 'bg-green-500'}`;
+            
+            // Use requestAnimationFrame to ensure the class change triggers the transition
+            requestAnimationFrame(() => {
+                banner.classList.add('show');
+            });
+
+            setTimeout(() => {
+                banner.classList.remove('show');
+            }, 5000);
+        }
+
+        function captureAndPostCard() {
+            showNotification('Generating weather card image...', false);
+            const cardElement = document.getElementById('weather-card-container');
+            
+            setTimeout(() => {
+                html2canvas(cardElement, {
+                    useCORS: true, allowTaint: true, backgroundColor: null,
+                }).then(canvas => {
+                    const imageData = canvas.toDataURL('image/jpeg', 0.9).split(',')[1];
+                    showNotification('Image captured. Posting to Twitter...', false);
+                    
+                    fetch(window.location.origin + '/post-weather-tweet-with-image', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ image: imageData })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.status === 'success') {
+                            showNotification('Tweet posted successfully!', false);
+                        } else {
+                            showNotification(`Error: ${data.message}`, true);
+                        }
+                    })
+                    .catch(err => {
+                        console.error('Error sending image to server:', err);
+                        showNotification('Failed to communicate with server.', true);
+                    });
+
+                }).catch(err => {
+                    console.error('Error generating image:', err);
+                    showNotification('Could not generate weather card image.', true);
+                });
+            }, 2000);
+        }
+
+        async function getWeatherData() {
+            try {
+                const response = await fetch(`/api/weather-data?city=${city}&country=${countryCode}`);
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || `Server error (${response.status})`);
+                }
+                const weatherData = await response.json();
+                displayWeather(weatherData);
+            } catch (error) {
+                console.error("Error fetching weather data:", error);
+                document.getElementById('location-name').textContent = "Error";
+                document.getElementById('location-region-country').textContent = "Could not load weather data.";
+                showNotification(error.message, true);
+            }
+        }
+
+        function createTwinklingStars(num) { 
+            const container = document.getElementById('animated-bg-layer');
+            if (!container) return;
+            container.innerHTML = '';
+            for(let i=0; i<num; i++) {
+                const star = document.createElement('div');
+                star.className = 'star';
+                const size = Math.random() * 2 + 1;
+                star.style.width = `${size}px`; star.style.height = `${size}px`;
+                star.style.top = `${Math.random() * 100}%`; star.style.left = `${Math.random() * 100}%`;
+                star.style.animationDuration = `${Math.random() * 3 + 2}s`; star.style.animationDelay = `${Math.random() * 3}s`;
+                container.appendChild(star);
+            }
+        }
+
+        function getWeatherIconUrl(iconCode) { return `https://openweathermap.org/img/wn/${iconCode}@2x.png`; }
+
+        // UPDATED AND HARDENED displayWeather FUNCTION
+        function displayWeather(data) {
+            try {
+                const { location, current, forecast, air_quality } = data;
+
+                // --- Safely get timezone and create time formatter ---
+                const timezoneOffset = forecast?.city?.timezone ?? 0;
+                const getLocalTime = (dt, opts) => new Date((dt + timezoneOffset) * 1000).toLocaleString('en-US', {...opts, timeZone: 'UTC'});
+
+                // --- Set background based on day/night ---
+                const cardContainer = document.getElementById('weather-card-container');
+                const isDay = current.dt > current.sys.sunrise && current.dt < current.sys.sunset;
+                cardContainer.className = 'weather-card w-full max-w-4xl mx-auto rounded-3xl shadow-2xl text-white';
+                cardContainer.classList.add(isDay ? 'bg-day' : 'bg-night');
+                
+                if (!isDay) {
+                    createTwinklingStars(80);
+                } else {
+                    const stars = document.getElementById('animated-bg-layer');
+                    if (stars) stars.innerHTML = '';
+                }
+
+                // --- Location and Time ---
+                document.getElementById('location-name').textContent = location?.name || 'Unknown Location';
+                document.getElementById('location-region-country').textContent = `${location?.state || ''}, ${location?.country || ''}`;
+                
+                const timeOpts = { hour: '2-digit', minute: '2-digit', hour12: true };
+                const dateOpts = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+                document.getElementById('local-time').textContent = `${getLocalTime(current.dt, dateOpts)} | ${getLocalTime(current.dt, timeOpts)}`;
+                document.getElementById('last-updated').textContent = `Updated: ${getLocalTime(current.dt, timeOpts)}`;
+
+                // --- Main Temperature Card ---
+                document.getElementById('current-condition-icon').src = getWeatherIconUrl(current.weather[0].icon);
+                document.getElementById('current-condition-text').textContent = current.weather[0].description;
+                document.getElementById('current-temp').innerHTML = `${Math.round(current.main.temp)}&deg;C`;
+                document.getElementById('feels-like-temp').innerHTML = `${Math.round(current.main.feels_like)}&deg;C`;
+                document.getElementById('max-temp').innerHTML = `${Math.round(current.main.temp_max)}&deg;`;
+                document.getElementById('min-temp').innerHTML = `${Math.round(current.main.temp_min)}&deg;`;
+                
+                // --- Weather Details Grid ---
+                document.getElementById('wind-speed').textContent = `${(current.wind.speed * 3.6).toFixed(1)} km/h`;
+                document.getElementById('wind-direction').textContent = `Dir: ${current.wind.deg}°`;
+                document.getElementById('humidity').textContent = `${current.main.humidity}%`;
+                document.getElementById('pressure').textContent = `${current.main.pressure} mb`;
+                document.getElementById('visibility').textContent = `${(current.visibility / 1000).toFixed(1)} km`;
+                document.getElementById('cloudiness').textContent = `${current.clouds.all}%`;
+                
+                // Safely get rain chance
+                const rainChance = forecast?.list?.[0]?.pop ?? 0;
+                document.getElementById('rain-chance').textContent = `${Math.round(rainChance * 100)}%`;
+
+                // --- Sunrise & Sunset ---
+                document.getElementById('sunrise').textContent = getLocalTime(current.sys.sunrise, timeOpts);
+                document.getElementById('sunset').textContent = getLocalTime(current.sys.sunset, timeOpts);
+
+                // --- Air Quality ---
+                const aq = air_quality?.components || {};
+                ['co', 'no2', 'o3', 'so2', 'pm2_5', 'pm10'].forEach(p => {
+                    const el = document.getElementById(`aq-${p}`);
+                    if(el) el.textContent = (aq[p] || 0).toFixed(1);
+                });
+                
+                const aqi = air_quality?.main?.aqi;
+                const aqIndexMap = { 1: 'Good', 2: 'Fair', 3: 'Moderate', 4: 'Poor', 5: 'Very Poor' };
+                const aqColorMap = { 1: 'bg-green-500', 2: 'bg-yellow-500', 3: 'bg-orange-500', 4: 'bg-red-500', 5: 'bg-purple-500' };
+                const aqIndexEl = document.getElementById('air-quality-index');
+                aqIndexEl.textContent = aqIndexMap[aqi] || 'Unknown';
+                aqIndexEl.className = 'font-bold text-lg px-3 py-1 rounded-full text-white';
+                aqIndexEl.classList.add(aqColorMap[aqi] || 'bg-gray-500');
+                
+                // --- Hourly Forecast ---
+                const hourlyContainer = document.querySelector('.hourly-forecast-container');
+                hourlyContainer.innerHTML = ''; // Clear previous entries
+                if (forecast?.list) {
+                    forecast.list.slice(0, 5).forEach(hour => { // Changed to 5 for better view
+                        const hourDiv = document.createElement('div');
+                        hourDiv.className = 'flex-shrink-0 text-center p-3 rounded-xl space-y-2 w-24 bg-white/10';
+                        hourDiv.innerHTML = `<p class="font-medium">${getLocalTime(hour.dt, { hour: 'numeric', hour12: true })}</p><img src="${getWeatherIconUrl(hour.weather[0].icon)}" class="w-12 h-12 mx-auto"><p class="font-bold text-lg">${Math.round(hour.main.temp)}&deg;C</p>`;
+                        hourlyContainer.appendChild(hourDiv);
+                    });
+                }
+
+                // If all rendering is successful, proceed to capture
+                captureAndPostCard();
+
+            } catch (error) {
+                console.error("Error rendering weather data:", error);
+                showNotification("Failed to display weather data. Check console.", true);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', getWeatherData);
+    </script>
+</body>
+</html>
