@@ -1,18 +1,20 @@
-# Use an official lightweight Python image
-FROM python:3.11-slim
+# Dockerfile
 
-# Set environment variables
-ENV PYTHONUNBUFFERED True
-ENV APP_HOME /app
-WORKDIR $APP_HOME
+# Use an official lightweight Python image.
+FROM python:3.9-slim
 
-# Install dependencies
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy the dependencies file and install them
+# This is done in a separate step for better caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code to the container
+# Copy the rest of the application's code
 COPY . .
 
-# Run the web server with Gunicorn
-# It will listen on the port provided by Cloud Run ($PORT)
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 300 app:app
+# Set the command to run your app using Gunicorn
+# The PORT environment variable is automatically set by Cloud Run.
+# NEW, CORRECT LINE - USE THIS INSTEAD
+CMD ["/bin/sh", "-c", "gunicorn --bind 0.0.0.0:$PORT WeatherAppBot:app"]
