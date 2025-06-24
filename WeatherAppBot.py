@@ -2,7 +2,7 @@ import tweepy
 import requests
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from flask import Flask
 import logging
@@ -58,38 +58,51 @@ except Exception as e:
     logging.critical(f"An unexpected error occurred during Twitter client initialization: {e}")
 
 # --- Weather and Tweet Creation Functions ---
-def get_weather(city):
-    """Fetches current weather data for the specified city from OpenWeatherMap."""
+def get_weather_and_forecast(city):
+    """Fetches current weather data and 5-day / 3-hour forecast for the specified city from OpenWeatherMap."""
     try:
         weather_api_key = get_env_variable("WEATHER_API_KEY")
     except EnvironmentError:
         logging.error("WEATHER_API_KEY not found. Cannot fetch weather.")
-        return None
+        return None, None
 
-    url = f'https://api.openweathermap.org/data/2.5/weather?q={city},IN&appid={weather_api_key}&units=metric'
+    # Current weather API
+    current_weather_url = f'https://api.openweathermap.org/data/2.5/weather?q={city},IN&appid={weather_api_key}&units=metric'
+    # Forecast API (5 day / 3 hour)
+    forecast_url = f'https://api.openweathermap.org/data/2.5/forecast?q={city},IN&appid={weather_api_key}&units=metric'
+
+    current_weather_data = None
+    forecast_data = None
+
     try:
-        weather_response = requests.get(url, timeout=10)
+        weather_response = requests.get(current_weather_url, timeout=10)
         weather_response.raise_for_status()
-        return weather_response.json()
+        current_weather_data = weather_response.json()
     except requests.exceptions.RequestException as err:
-        logging.error(f"Error fetching weather data for {city}: {err}")
-        return None
+        logging.error(f"Error fetching current weather data for {city}: {err}")
 
-def generate_dynamic_hashtags(weather_data, current_day):
+    try:
+        forecast_response = requests.get(forecast_url, timeout=10)
+        forecast_response.raise_for_status()
+        forecast_data = forecast_response.json()
+    except requests.exceptions.RequestException as err:
+        logging.error(f"Error fetching forecast data for {city}: {err}")
+    
+    return current_weather_data, forecast_data
+
+def generate_dynamic_hashtags(weather_data, current_day, rain_expected_6hr):
     """Generates a list of hashtags based on weather conditions."""
     hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate', '#bot'}
     
     main_conditions = weather_data.get('main', {})
     weather_main_info = weather_data.get('weather', [{}])[0]
     wind_conditions = weather_data.get('wind', {})
-    rain_info_api = weather_data.get('rain', {})
     
     temp_celsius = main_conditions.get('temp', 0)
     sky_description = weather_main_info.get('description', "").lower()
     wind_speed_kmh = wind_conditions.get('speed', 0) * 3.6
-    rain_1h = rain_info_api.get('1h', 0)
 
-    if rain_1h > 0:
+    if rain_expected_6hr:
         hashtags.add('#HyderabadRains')
         hashtags.add('#rain')
     if temp_celsius > 35:
@@ -103,19 +116,18 @@ def generate_dynamic_hashtags(weather_data, current_day):
 
     return list(hashtags)
 
-def create_weather_tweet_content(city, weather_data):
+def create_weather_tweet_content(city, current_weather_data, forecast_data):
     """
     Creates the tweet body and a list of dynamic hashtags.
     Returns a tuple: (list_of_tweet_lines, list_of_hashtags)
     """
-    if not weather_data:
-        return (["Could not generate weather report: Data missing."], ["#error"])
+    if not current_weather_data:
+        return (["Could not generate current weather report: Data missing."], ["#error"])
 
-    # --- Extract and Format Data ---
-    weather_main_info = weather_data.get('weather', [{}])[0]
-    main_conditions = weather_data.get('main', {})
-    wind_conditions = weather_data.get('wind', {})
-    rain_info_api = weather_data.get('rain', {})
+    # --- Extract and Format Data from Current Weather ---
+    weather_main_info = current_weather_data.get('weather', [{}])[0]
+    main_conditions = current_weather_data.get('main', {})
+    wind_conditions = current_weather_data.get('wind', {})
     
     now = datetime.now(pytz.timezone('Asia/Kolkata'))
     current_day = now.strftime('%A')
@@ -126,18 +138,37 @@ def create_weather_tweet_content(city, weather_data):
     humidity = main_conditions.get('humidity', 0)
     wind_speed_kmh = wind_conditions.get('speed', 0) * 3.6
     wind_direction_cardinal = degrees_to_cardinal(wind_conditions.get('deg', 0))
-    rain_1h = rain_info_api.get('1h', 0)
+
+    # --- Check for rain in next 6 hours from forecast data ---
+    rain_expected_6hr = False
+    rain_chance_message = "☔ No Rain Expected in next 6 hrs"
+    if forecast_data and 'list' in forecast_data:
+        time_limit = now + timedelta(hours=6)
+        for forecast_entry in forecast_data['list']:
+            forecast_time_utc = datetime.fromtimestamp(forecast_entry['dt'], tz=pytz.utc)
+            forecast_time_local = forecast_time_utc.astimezone(pytz.timezone('Asia/Kolkata'))
+
+            if forecast_time_local <= time_limit:
+                # Check for 'rain' object or 'pop' (probability of precipitation)
+                if 'rain' in forecast_entry and forecast_entry['rain'].get('3h', 0) > 0: # 3h rain volume
+                    rain_expected_6hr = True
+                    rain_chance_message = "🌧️ Rain expected within next 6 hours!"
+                    break
+                elif forecast_entry.get('pop', 0) > 0.3: # Probability of Precipitation > 30%
+                    rain_expected_6hr = True
+                    rain_chance_message = "💧 High chance of rain within next 6 hours!"
+                    break
+            else:
+                # Forecast entries are usually in chronological order, so we can stop if we pass the time limit
+                break
     
     # --- Dynamic Lines ---
-    rain_forecast = f"☔ Rain Alert: {rain_1h:.2f} mm/hr" if rain_1h > 0 else "☔ No Rain Expected"
-    
-    if rain_1h > 0.5: closing_message = "Stay dry out there! 🌧️"
+    if rain_expected_6hr: closing_message = "Stay dry out there! 🌧️"
     elif temp_celsius > 35: closing_message = "It's a hot one! Stay cool and hydrated. ☀️"
     elif temp_celsius < 18: closing_message = "Brr, it's cool! Consider a light jacket. 🧣"
     else: closing_message = "Enjoy your day! 😊"
 
     # --- Assemble tweet content ---
-    # MODIFIED GREETING LINE
     time_str = now.strftime("%I:%M %p") # e.g., 08:00 PM
     date_str = f"{now.day} {now.strftime('%B')}" # e.g., 8 June
     greeting_line = f"Hello, {city}!👋, {current_day} weather as of {date_str}, {time_str}:"
@@ -145,19 +176,19 @@ def create_weather_tweet_content(city, weather_data):
     tweet_lines = [
         greeting_line,
         f"☁️ Sky: {sky_description}",
-        f"🌡️ Temp: {temp_celsius:.0f}°C(feels: {feels_like_celsius:.0f}°C)",
+        f"🌡️ Temp: {temp_celsius:.0f}°C (feels: {feels_like_celsius:.0f}°C)",
         f"💧 Humidity: {humidity:.0f}%",
         f"💨 Wind: {wind_speed_kmh:.0f} km/h from the {wind_direction_cardinal}",
-        rain_forecast,
+        rain_chance_message,
         "", # For a line break
         closing_message
     ]
     
-    hashtags = generate_dynamic_hashtags(weather_data, current_day)
+    hashtags = generate_dynamic_hashtags(current_weather_data, current_day, rain_expected_6hr)
     
     return tweet_lines, hashtags
 
-# --- Tweeting Function ---
+# --- Tweeting Function (remains the same) ---
 def tweet_post(tweet_lines, hashtags):
     """
     Assembles and posts a tweet. If too long, it removes hashtags until it fits.
@@ -209,12 +240,12 @@ def tweet_post(tweet_lines, hashtags):
 def perform_scheduled_tweet_task():
     """Main task to fetch weather, create tweet content, and post it."""
     logging.info(f"--- Running weather tweet job for {CITY_TO_MONITOR} ---")
-    weather_data = get_weather(CITY_TO_MONITOR)
-    if not weather_data:
-        logging.warning(f"Could not retrieve weather for {CITY_TO_MONITOR}. Aborting.")
+    current_weather_data, forecast_data = get_weather_and_forecast(CITY_TO_MONITOR)
+    if not current_weather_data:
+        logging.warning(f"Could not retrieve current weather for {CITY_TO_MONITOR}. Aborting.")
         return False
 
-    tweet_lines, hashtags = create_weather_tweet_content(CITY_TO_MONITOR, weather_data)
+    tweet_lines, hashtags = create_weather_tweet_content(CITY_TO_MONITOR, current_weather_data, forecast_data)
     success = tweet_post(tweet_lines, hashtags)
 
     if success:
