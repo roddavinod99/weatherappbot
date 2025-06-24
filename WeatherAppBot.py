@@ -77,7 +77,7 @@ def get_weather(city):
 
 def generate_dynamic_hashtags(weather_data, current_day):
     """Generates a list of hashtags based on weather conditions."""
-    hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate'}
+    hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate', '#bot'}
     
     main_conditions = weather_data.get('main', {})
     weather_main_info = weather_data.get('weather', [{}])[0]
