@@ -2,7 +2,7 @@ import tweepy
 import requests
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from flask import Flask
 import logging
@@ -58,53 +58,38 @@ except Exception as e:
     logging.critical(f"An unexpected error occurred during Twitter client initialization: {e}")
 
 # --- Weather and Tweet Creation Functions ---
-def get_weather_and_forecast(city):
-    """Fetches current weather data and 5-day / 3-hour forecast for the specified city from OpenWeatherMap."""
+def get_weather(city):
+    """Fetches current weather data for the specified city from OpenWeatherMap."""
     try:
         weather_api_key = get_env_variable("WEATHER_API_KEY")
     except EnvironmentError:
         logging.error("WEATHER_API_KEY not found. Cannot fetch weather.")
-        return None, None
+        return None
 
-    # Current weather API
-    # Note: Assuming 'IN' for India. If you need to monitor cities in other countries,
-    # consider making the country code dynamic.
-    current_weather_url = f'https://api.openweathermap.org/data/2.5/weather?q={city},IN&appid={weather_api_key}&units=metric'
-    # Forecast API (5 day / 3 hour)
-    forecast_url = f'https://api.openweathermap.org/data/2.5/forecast?q={city},IN&appid={weather_api_key}&units=metric'
-
-    current_weather_data = None
-    forecast_data = None
-
+    url = f'https://api.openweathermap.org/data/2.5/weather?q={city},IN&appid={weather_api_key}&units=metric'
     try:
-        weather_response = requests.get(current_weather_url, timeout=10)
+        weather_response = requests.get(url, timeout=10)
         weather_response.raise_for_status()
-        current_weather_data = weather_response.json()
+        return weather_response.json()
     except requests.exceptions.RequestException as err:
-        logging.error(f"Error fetching current weather data for {city}: {err}")
+        logging.error(f"Error fetching weather data for {city}: {err}")
+        return None
 
-    try:
-        forecast_response = requests.get(forecast_url, timeout=10)
-        forecast_response.raise_for_status()
-        forecast_data = forecast_response.json()
-    except requests.exceptions.RequestException as err:
-        logging.error(f"Error fetching forecast data for {city}: {err}")
-    
-    return current_weather_data, forecast_data
-
-def generate_dynamic_hashtags(weather_data, current_day, rain_expected_6hr):
+def generate_dynamic_hashtags(weather_data, current_day):
     """Generates a list of hashtags based on weather conditions."""
-    hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate', '#bot'}
+    hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate'}
     
     main_conditions = weather_data.get('main', {})
     weather_main_info = weather_data.get('weather', [{}])[0]
     wind_conditions = weather_data.get('wind', {})
+    rain_info_api = weather_data.get('rain', {})
     
     temp_celsius = main_conditions.get('temp', 0)
     sky_description = weather_main_info.get('description', "").lower()
     wind_speed_kmh = wind_conditions.get('speed', 0) * 3.6
+    rain_1h = rain_info_api.get('1h', 0)
 
-    if rain_expected_6hr:
+    if rain_1h > 0:
         hashtags.add('#HyderabadRains')
         hashtags.add('#rain')
     if temp_celsius > 35:
@@ -118,59 +103,41 @@ def generate_dynamic_hashtags(weather_data, current_day, rain_expected_6hr):
 
     return list(hashtags)
 
-def create_weather_tweet_content(city, current_weather_data, forecast_data):
+def create_weather_tweet_content(city, weather_data):
     """
     Creates the tweet body and a list of dynamic hashtags.
     Returns a tuple: (list_of_tweet_lines, list_of_hashtags)
     """
-    if not current_weather_data:
-        return (["Could not generate current weather report: Data missing."], ["#error"])
+    if not weather_data:
+        return (["Could not generate weather report: Data missing."], ["#error"])
 
-    # --- Extract and Format Data from Current Weather ---
-    weather_main_info = current_weather_data.get('weather', [{}])[0]
-    main_conditions = current_weather_data.get('main', {})
-    wind_conditions = current_weather_data.get('wind', {})
+    # --- Extract and Format Data ---
+    weather_main_info = weather_data.get('weather', [{}])[0]
+    main_conditions = weather_data.get('main', {})
+    wind_conditions = weather_data.get('wind', {})
+    rain_info_api = weather_data.get('rain', {})
     
     now = datetime.now(pytz.timezone('Asia/Kolkata'))
     current_day = now.strftime('%A')
 
     sky_description = weather_main_info.get('description', "N/A").title()
     temp_celsius = main_conditions.get('temp', 0)
-    feels_like_celsius = main_conditions.get('feels_like', 0) # Corrected variable name
+    feels_like_celsius = main_conditions.get('feels_like', 0)
     humidity = main_conditions.get('humidity', 0)
     wind_speed_kmh = wind_conditions.get('speed', 0) * 3.6
     wind_direction_cardinal = degrees_to_cardinal(wind_conditions.get('deg', 0))
-
-    # --- Check for rain in next 6 hours from forecast data ---
-    rain_expected_6hr = False
-    rain_chance_message = "☔ No Rain Expected in next 6 hrs"
-    if forecast_data and 'list' in forecast_data:
-        time_limit = now + timedelta(hours=6)
-        for forecast_entry in forecast_data['list']:
-            forecast_time_utc = datetime.fromtimestamp(forecast_entry['dt'], tz=pytz.utc)
-            forecast_time_local = forecast_time_utc.astimezone(pytz.timezone('Asia/Kolkata'))
-
-            if forecast_time_local <= time_limit:
-                # Check for 'rain' object or 'pop' (probability of precipitation)
-                if 'rain' in forecast_entry and forecast_entry['rain'].get('3h', 0) > 0: # 3h rain volume
-                    rain_expected_6hr = True
-                    rain_chance_message = "🌧️ Rain expected within next 6 hours!"
-                    break
-                elif forecast_entry.get('pop', 0) > 0.3: # Probability of Precipitation > 30%
-                    rain_expected_6hr = True
-                    rain_chance_message = "💧 High chance of rain within next 6 hours!"
-                    break
-            else:
-                # Forecast entries are usually in chronological order, so we can stop if we pass the time limit
-                break
+    rain_1h = rain_info_api.get('1h', 0)
     
     # --- Dynamic Lines ---
-    if rain_expected_6hr: closing_message = "Stay dry out there! 🌧️"
+    rain_forecast = f"☔ Rain Alert: {rain_1h:.2f} mm/hr" if rain_1h > 0 else "☔ No Rain Expected"
+    
+    if rain_1h > 0.5: closing_message = "Stay dry out there! 🌧️"
     elif temp_celsius > 35: closing_message = "It's a hot one! Stay cool and hydrated. ☀️"
     elif temp_celsius < 18: closing_message = "Brr, it's cool! Consider a light jacket. 🧣"
     else: closing_message = "Enjoy your day! 😊"
 
     # --- Assemble tweet content ---
+    # MODIFIED GREETING LINE
     time_str = now.strftime("%I:%M %p") # e.g., 08:00 PM
     date_str = f"{now.day} {now.strftime('%B')}" # e.g., 8 June
     greeting_line = f"Hello, {city}!👋, {current_day} weather as of {date_str}, {time_str}:"
@@ -178,73 +145,54 @@ def create_weather_tweet_content(city, current_weather_data, forecast_data):
     tweet_lines = [
         greeting_line,
         f"☁️ Sky: {sky_description}",
-        f"🌡️ Temp: {temp_celsius:.0f}°C (feels: {feels_like_celsius:.0f}°C)", # Corrected here
+        f"🌡️ Temp: {temp_celsius:.0f}°C(feels: {feels_like_celsius:.0f}°C)",
         f"💧 Humidity: {humidity:.0f}%",
         f"💨 Wind: {wind_speed_kmh:.0f} km/h from the {wind_direction_cardinal}",
-        rain_chance_message,
+        rain_forecast,
         "", # For a line break
         closing_message
     ]
     
-    hashtags = generate_dynamic_hashtags(current_weather_data, current_day, rain_expected_6hr)
+    hashtags = generate_dynamic_hashtags(weather_data, current_day)
     
     return tweet_lines, hashtags
 
-def tweet_post(original_tweet_lines, original_hashtags):
+# --- Tweeting Function ---
+def tweet_post(tweet_lines, hashtags):
     """
-    Assembles and posts a tweet. If too long, it first removes hashtags until it fits.
-    If still too long, it removes the last line of the main tweet content.
+    Assembles and posts a tweet. If too long, it removes hashtags until it fits.
+    The tweet body will NOT be modified.
     """
-    if not all([original_tweet_lines, original_hashtags, bot_api_client, POST_TO_TWITTER_ENABLED]):
+    if not all([tweet_lines, hashtags, bot_api_client, POST_TO_TWITTER_ENABLED]):
         if not POST_TO_TWITTER_ENABLED:
-            logging.info(f"[TEST MODE] Skipping post. Content:\n" + "\n".join(original_tweet_lines) + "\n" + " ".join(original_hashtags))
+            logging.info(f"[TEST MODE] Skipping post. Content:\n" + "\n".join(tweet_lines) + "\n" + " ".join(hashtags))
             return True
         logging.error("Tweet posting prerequisites not met. Aborting.")
         return False
     
-    current_tweet_lines = list(original_tweet_lines) # Make a mutable copy of tweet lines
-    current_hashtags = list(original_hashtags)       # Make a mutable copy of hashtags
-
-    tweet_text = ""
-    # Flag to ensure we only try removing the last line of main content once.
-    # This prevents an infinite loop if the tweet body itself is extremely long.
-    last_content_line_removed = False
-
-    while True:
-        body = "\n".join(current_tweet_lines)
-        hashtag_str = " ".join(current_hashtags)
-        
-        # Construct the full tweet string for length check
-        if hashtag_str:
-            full_tweet = f"{body}\n{hashtag_str}"
-        else:
-            full_tweet = body # No hashtags left, just the body
-
+    # --- Assemble tweet and adjust for character limit by removing hashtags ---
+    body = "\n".join(tweet_lines)
+    
+    # Start with all hashtags and remove them until the tweet fits.
+    while hashtags:
+        hashtag_str = " ".join(hashtags)
+        full_tweet = f"{body}\n{hashtag_str}"
         if len(full_tweet) <= TWITTER_MAX_CHARS:
-            tweet_text = full_tweet
-            break # Tweet fits, exit the loop
+            break # Tweet is good to go
+        
+        # If too long, remove the last hashtag and try again
+        hashtags.pop()
+    else:
+        # This block executes if the while loop finishes (i.e., all hashtags are removed)
+        # The tweet is now just the body.
+        full_tweet = body
 
-        # If tweet is too long and we still have hashtags, remove one
-        if current_hashtags:
-            current_hashtags.pop() # Removes the last hashtag
-            logging.info(f"Tweet too long, removed a hashtag. Remaining hashtags: {len(current_hashtags)}")
-        # If no hashtags left AND we haven't already removed the last content line, and there's a line to remove
-        elif not last_content_line_removed and len(current_tweet_lines) > 0:
-            # Remove the last line from the tweet content (e.g., "Enjoy your day! 😊")
-            current_tweet_lines.pop()
-            last_content_line_removed = True
-            logging.info("Tweet still too long after all hashtags removed. Sacrificing the last line of content.")
-            # Continue the loop to re-check the length with the shorter body
-        else:
-            # All shortening attempts exhausted (hashtags removed, last content line removed or none existed)
-            # and the tweet is still too long. Set tweet_text to the current state and break.
-            logging.warning("Tweet still too long after all shortening attempts. Will attempt to post as is, but may fail due to Twitter character limit.")
-            tweet_text = full_tweet
-            break # Exit loop, let tweepy handle the API error if it occurs due to length
-
+    # The tweet body is now preserved at all costs. 
+    # If the body alone is over the limit, the API will reject it, preventing a broken tweet.
+    tweet_text = full_tweet
+    
     # --- Post to Twitter ---
     try:
-        # The 'tweet_text' variable now holds the final, shortened tweet content
         bot_api_client.create_tweet(text=tweet_text)
         logging.info("Tweet posted successfully to Twitter!")
         logging.info(f"Final Tweet ({len(tweet_text)} chars): \n{tweet_text}")
@@ -253,21 +201,20 @@ def tweet_post(original_tweet_lines, original_hashtags):
         logging.warning("Rate limit exceeded. Will not retry in this serverless model.")
         return False
     except tweepy.errors.TweepyException as err:
-        # This catches errors including "character limit exceeded" if the tweet is still too long
-        logging.error(f"Error posting tweet (it may be over the character limit or other API issue): {err}")
-        logging.error(f"Failed tweet content that was attempted to be posted:\n{tweet_text}")
+        # This will catch errors if the tweet is still too long after removing all hashtags.
+        logging.error(f"Error posting tweet (it may be over the character limit): {err}")
         return False
 
 # --- Core Task Logic ---
 def perform_scheduled_tweet_task():
     """Main task to fetch weather, create tweet content, and post it."""
     logging.info(f"--- Running weather tweet job for {CITY_TO_MONITOR} ---")
-    current_weather_data, forecast_data = get_weather_and_forecast(CITY_TO_MONITOR)
-    if not current_weather_data:
-        logging.warning(f"Could not retrieve current weather for {CITY_TO_MONITOR}. Aborting.")
+    weather_data = get_weather(CITY_TO_MONITOR)
+    if not weather_data:
+        logging.warning(f"Could not retrieve weather for {CITY_TO_MONITOR}. Aborting.")
         return False
 
-    tweet_lines, hashtags = create_weather_tweet_content(CITY_TO_MONITOR, current_weather_data, forecast_data)
+    tweet_lines, hashtags = create_weather_tweet_content(CITY_TO_MONITOR, weather_data)
     success = tweet_post(tweet_lines, hashtags)
 
     if success:
