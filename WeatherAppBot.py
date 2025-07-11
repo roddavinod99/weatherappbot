@@ -282,4 +282,4 @@ def run_tweet_task_endpoint():
 if __name__ == "__main__":
     app_port = int(os.environ.get("PORT", 8080))
     logging.info(f"--- Starting Flask Server for local development on port {app_port} ---")
-    app.run(host='0.0.0.0', port=app_port, debug=False)
+    app.run(host='0.0.0.0', port=app_port, debug=True)
