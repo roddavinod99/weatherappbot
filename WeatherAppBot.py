@@ -1,7 +1,7 @@
 import tweepy
 import requests
 import os
-import time
+import time  # This import is not used in the provided code
 from datetime import datetime, timedelta
 import pytz
 from flask import Flask
@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 TWITTER_MAX_CHARS = 280
 CITY_TO_MONITOR = "Gachibowli"
 # IMPORTANT: Make sure this image file is in the same directory as your python script
-IMAGE_PATH_RAIN = "It's going to Rain.png" 
+IMAGE_PATH_RAIN = "It's going to Rain.png"
 POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "true").lower() == "true"
 
 if not POST_TO_TWITTER_ENABLED:
@@ -54,7 +54,7 @@ try:
         consumer_key=consumer_key, consumer_secret=consumer_secret,
         access_token=access_token, access_token_secret=access_token_secret
     )
-    
+
     # v1.1 client is needed for media uploads and metadata
     auth = tweepy.OAuth1UserHandler(consumer_key, consumer_secret, access_token, access_token_secret)
     bot_api_client_v1 = tweepy.API(auth)
@@ -86,21 +86,28 @@ def get_weather_forecast(city):
 
 def generate_dynamic_hashtags(weather_data, current_day):
     """Generates a list of hashtags based on weather conditions."""
-    hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate'}
-    
-    current_weather = weather_data.get('list', [{}])[0]
+    hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate'} # Using a set to avoid duplicates
+
+    # Ensure weather_data['list'] is not empty before accessing its elements
+    if not weather_data or 'list' not in weather_data or not weather_data['list']:
+        return list(hashtags)
+
+    current_weather = weather_data['list'][0]
     main_conditions = current_weather.get('main', {})
     weather_main_info = current_weather.get('weather', [{}])[0]
     wind_conditions = current_weather.get('wind', {})
-    
+
     temp_celsius = main_conditions.get('temp', 0)
     sky_description = weather_main_info.get('description', "").lower()
     wind_speed_kmh = wind_conditions.get('speed', 0) * 3.6
-    
-    # Check for rain in the upcoming forecast
-    if any('rain' in item for item in weather_data.get('list', [])[:2]):
-        hashtags.add('#HyderabadRains')
-        hashtags.add('#rain')
+
+    # Check for rain in the upcoming forecast (within the next 12 hours - 4 intervals)
+    for item in weather_data.get('list', [])[1:5]: # Check the next 4 intervals (3 hours each)
+        if 'rain' in item.get('weather', [{}])[0].get('main', '').lower() or (200 <= item.get('weather', [{}])[0].get('id', 800) < 600):
+            hashtags.add('#HyderabadRains')
+            hashtags.add('#rain')
+            break # Once rain is detected, no need to check further
+
     if temp_celsius > 35:
         hashtags.add('#Heatwave')
     if 'clear' in sky_description:
@@ -123,35 +130,67 @@ def create_weather_tweet_content(city, forecast_data):
     indian_tz = pytz.timezone('Asia/Kolkata')
     now = datetime.now(indian_tz)
     current_day = now.strftime('%A')
-    
-    is_rain_forecasted = False
-    alt_text_lines = [f"Weather forecast for the next 6 hours in {city}:"]
-    
-    # Check the next two 3-hour intervals for rain
-    for forecast in forecast_data['list'][:2]:
-        weather_id = forecast.get('weather', [{}])[0].get('id', 800)
-        if 'rain' in forecast or (200 <= weather_id < 600):
-            is_rain_forecasted = True
-        
-        forecast_time_utc = datetime.fromtimestamp(forecast['dt'], tz=pytz.utc)
-        forecast_time_local = forecast_time_utc.astimezone(indian_tz)
-        temp = forecast['main']['temp']
-        description = forecast['weather'][0]['description'].title()
-        alt_text_lines.append(f"- Around {forecast_time_local.strftime('%I %p')}: Expect {description} with temperatures near {temp:.0f}°C.")
-    
-    alt_text_summary = " ".join(alt_text_lines)
 
+    is_rain_forecasted = False
+
+    # --- Current Weather Details for Alt Text ---
     current_weather = forecast_data['list'][0]
     main_conditions = current_weather.get('main', {})
     wind_conditions = current_weather.get('wind', {})
-    
+
     sky_description = current_weather['weather'][0].get('description', "N/A").title()
     temp_celsius = main_conditions.get('temp', 0)
     feels_like_celsius = main_conditions.get('feels_like', 0)
     humidity = main_conditions.get('humidity', 0)
+    pressure_hpa = main_conditions.get('pressure', 0)
+    visibility_km = current_weather.get('visibility', 0) / 1000  # Convert meters to km
     wind_speed_kmh = wind_conditions.get('speed', 0) * 3.6
     wind_direction_cardinal = degrees_to_cardinal(wind_conditions.get('deg', 0))
+    cloudiness = current_weather.get('clouds', {}).get('all', 0)
 
+    alt_text_lines = []
+
+    alt_text_lines.append(f"Current weather in {city} at {now.strftime('%I:%M %p')}:")
+    alt_text_lines.append(f"It's about {temp_celsius:.0f}°C, but feels like {feels_like_celsius:.0f}°C with {sky_description.lower()} skies.")
+    alt_text_lines.append(f"Humidity is {humidity:.0f}%, pressure {pressure_hpa:.0f} hPa. Wind is {wind_speed_kmh:.0f} km/h from the {wind_direction_cardinal}. Visibility around {visibility_km:.0f} km, and cloudiness is {cloudiness:.0f}%.")
+
+    # --- 12-Hour Forecast Details for Alt Text ---
+    alt_text_lines.append("\nHere's what to expect for the next 12 hours:")
+
+    # Iterate through the next 4 intervals (3 hours each = 12 hours)
+    # Start from the current interval itself as OpenWeatherMap's 'list' contains
+    # the current weather as the first element and then subsequent 3-hour forecasts.
+    # We want to consider the next 4 forecast intervals (which means indices 1 to 4).
+    for forecast in forecast_data['list'][1:5]:
+        forecast_time_utc = datetime.fromtimestamp(forecast['dt'], tz=pytz.utc)
+        forecast_time_local = forecast_time_utc.astimezone(indian_tz)
+
+        temp = forecast['main']['temp']
+        description = forecast['weather'][0]['description'].title()
+        pop = forecast.get('pop', 0) * 100  # Probability of precipitation
+        rain_volume = forecast.get('rain', {}).get('3h', 0)  # Rain volume in last 3 hours
+
+        # Check for rain in the upcoming forecast
+        weather_id = forecast.get('weather', [{}])[0].get('id', 800)
+        if 'rain' in forecast.get('weather', [{}])[0].get('main', '').lower() or (200 <= weather_id < 600):
+            is_rain_forecasted = True
+
+        forecast_detail = f"- By {forecast_time_local.strftime('%I %p')}: Expect {description} around {temp:.0f}°C."
+        if pop > 0:
+            forecast_detail += f" Chance of rain: {pop:.0f}%."
+        if rain_volume > 0:
+            forecast_detail += f" ({rain_volume:.1f}mm expected)."
+
+        alt_text_lines.append(forecast_detail)
+
+    alt_text_summary = " ".join(alt_text_lines)
+
+    # Truncate alt_text_summary to 1000 characters if it exceeds the limit
+    if len(alt_text_summary) > 1000:
+        logging.warning(f"Alt text exceeded 1000 characters ({len(alt_text_summary)}). Truncating.")
+        alt_text_summary = alt_text_summary[:997] + "..."  # Add ellipsis to indicate truncation
+
+    # --- Main Tweet Content ---
     time_str = now.strftime("%I:%M %p")
     date_str = f"{now.day} {now.strftime('%B')}"
     greeting_line = f"Hello, {city}!👋, {current_day} weather as of {date_str}, {time_str}:"
@@ -163,22 +202,18 @@ def create_weather_tweet_content(city, forecast_data):
         f"💧 Humidity: {humidity:.0f}%",
         f"💨 Wind: {wind_speed_kmh:.0f} km/h from the {wind_direction_cardinal}",
     ]
-    
-    # In the image you provided, you added a line asking users to check the alt text.
-    # You can add that here if you like.
-    # image_pointer_line = "Please check image alternate text for weather update."
 
     if is_rain_forecasted:
-        closing_message = "Heads up! Looks like rain is on the way. Stay dry! 🌧️"
-       # tweet_lines.append(image_pointer_line)
+        tweet_lines.append("Heads up! Looks like rain is on the way. Stay dry! 🌧️")
+        closing_message = ""
     else:
-        tweet_lines.append("☔ No Rain Expected")
+        tweet_lines.append("☔ No significant rain expected soon.")
         closing_message = "Have a great day! 😊"
 
     tweet_lines.extend(["", closing_message])
-    
+
     hashtags = generate_dynamic_hashtags(forecast_data, current_day)
-    
+
     return {
         "lines": tweet_lines,
         "hashtags": hashtags,
@@ -200,17 +235,18 @@ def tweet_post(tweet_content):
 
     body = "\n".join(tweet_content['lines'])
     hashtags = tweet_content['hashtags']
-    
-    while hashtags:
-        hashtag_str = " ".join(hashtags)
-        full_tweet = f"{body}\n{hashtag_str}"
-        if len(full_tweet) <= TWITTER_MAX_CHARS:
-            break
-        hashtags.pop()
+
+    # Adjust hashtags to fit within tweet character limit
+    full_tweet = f"{body}\n{' '.join(hashtags)}"
+    if len(full_tweet) > TWITTER_MAX_CHARS:
+        logging.warning("Tweet content + hashtags exceed character limit. Adjusting hashtags.")
+        # Try removing hashtags one by one from the end until it fits
+        while hashtags and len(f"{body}\n{' '.join(hashtags)}") > TWITTER_MAX_CHARS:
+            hashtags.pop()
+        tweet_text = f"{body}\n{' '.join(hashtags)}" if hashtags else body
     else:
-        full_tweet = body
-    
-    tweet_text = full_tweet
+        tweet_text = full_tweet
+
     media_ids = []
 
     if tweet_content['rain_imminent']:
@@ -221,17 +257,15 @@ def tweet_post(tweet_content):
                 logging.info(f"Rain detected. Uploading media: {IMAGE_PATH_RAIN}")
                 media = bot_api_client_v1.media_upload(filename=IMAGE_PATH_RAIN)
                 media_ids.append(media.media_id)
-                
-                #
-                # CORRECTED LINE: Use the v1.1 client to create media metadata (alt text)
-                #
+
                 bot_api_client_v1.create_media_metadata(media_id=media.media_id, alt_text=tweet_content['alt_text'])
-                
+
                 logging.info("Media uploaded and alt text added successfully.")
             except Exception as e:
                 logging.error(f"Failed to upload media or add alt text: {e}")
 
     try:
+        # Use media_ids argument only if it's not empty, otherwise pass None
         bot_api_client_v2.create_tweet(text=tweet_text, media_ids=media_ids if media_ids else None)
         logging.info("Tweet posted successfully to Twitter!")
         logging.info(f"Final Tweet ({len(tweet_text)} chars): \n{tweet_text}")
