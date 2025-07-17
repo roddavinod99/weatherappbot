@@ -1,8 +1,8 @@
 import tweepy
 import requests
 import os
-import time  # This import is not used in the provided code
-from datetime import datetime, timedelta
+# Corrected line 4
+import time  # This import is not used in the provided code
 import pytz
 from flask import Flask
 import logging
