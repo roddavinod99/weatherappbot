@@ -12,6 +12,14 @@ COPY requirements.txt .
 # --no-cache-dir reduces the image size by not storing pip cache
 RUN pip install --no-cache-dir -r requirements.txt
 
+# --- NEW ADDITION START ---
+# Install fontconfig for fc-cache to work
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    fontconfig \
+    # Clean up apt caches to keep image size small
+    && rm -rf /var/lib/apt/lists/*
+# --- NEW ADDITION END ---
+
 # Copy the font file into the container
 # Make sure consolas.ttf is in the same directory as your Dockerfile
 COPY consolas.ttf /usr/share/fonts/truetype/consolas/consolas.ttf
