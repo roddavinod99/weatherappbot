@@ -100,12 +100,15 @@ def generate_dynamic_hashtags(weather_data, current_day):
     sky_description = weather_main_info.get('description', "").lower()
     wind_speed_kmh = wind_conditions.get('speed', 0) * 3.6
 
-    # Check for rain in the upcoming forecast (within the next 12 hours - 4 intervals)
-    # Adjusted to check actual forecast items, not just the first 4.
+    # Check for rain in the upcoming forecast (within the next 12 hours)
     indian_tz = pytz.timezone('Asia/Kolkata')
-    now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
+    now_utc = datetime.utcnow().replace(tzinfo=pytz.utc) # Ensure now_utc is timezone-aware
+    
     for item in weather_data.get('list', []):
-        forecast_time_utc = datetime.fromtimestamp(item['dt'], tzinfo=pytz.utc)
+        # FIX: Correctly handle timezone for fromtimestamp
+        forecast_time_naive = datetime.fromtimestamp(item['dt'])
+        forecast_time_utc = pytz.utc.localize(forecast_time_naive) # Localize the naive datetime to UTC
+        
         if now_utc <= forecast_time_utc <= now_utc + timedelta(hours=12):
             weather_item_info = item.get('weather', [{}])[0]
             if 'rain' in weather_item_info.get('main', '').lower() or (200 <= weather_item_info.get('id', 800) < 600):
@@ -140,16 +143,19 @@ def create_weather_tweet_content(city, forecast_data):
     # --- Current Weather Details for Alt Text ---
     # Find the current weather entry. The first entry in 'list' is usually the closest.
     current_weather_entry = None
-    for entry in forecast_data['list']:
-        entry_time = datetime.fromtimestamp(entry['dt'], tz=pytz.utc).astimezone(indian_tz)
-        # Assuming the first entry is "current" or very close to it
-        # Or, find the entry whose time is closest to 'now'
-        if entry_time.hour == now.hour and entry_time.day == now.day: # Simplistic check, can be improved
-            current_weather_entry = entry
-            break
-    if not current_weather_entry:
-        current_weather_entry = forecast_data['list'][0] # Fallback to first if exact match not found
-        
+    # FIX: Ensure current_weather_entry_time is timezone-aware for comparison
+    
+    # Iterate through the forecast data to find the entry closest to 'now'
+    # Or simply take the first one if it's the most immediate forecast
+    current_weather_entry = forecast_data['list'][0] # OpenWeatherMap's 'list'[0] is usually current or very near future
+    
+    # For more precise "current" weather, one might use the 'weather' endpoint,
+    # but for blending with forecast, using forecast[0] is often acceptable.
+    # The image shows "Current weather in Gachibowli at 09:00 AM", so we need to
+    # be sure that this reflects the actual time of tweet generation.
+    # The 'dt' in forecast[0] is timestamp for *its* forecast time, not necessarily 'now'.
+    # We will stick to using 'now' for the heading and alt_text but extract data from forecast[0]
+    
     main_conditions = current_weather_entry.get('main', {})
     wind_conditions = current_weather_entry.get('wind', {})
     weather_info = current_weather_entry.get('weather', [{}])[0]
@@ -172,22 +178,25 @@ def create_weather_tweet_content(city, forecast_data):
     alt_text_lines.append("\n-------------------><-----------------------\n")
     alt_text_lines.append("Here's what to expect for the next 12 hours:")
 
-    # Filter forecast data for the next 12 hours
+    # Filter forecast data for the next 12 hours (4 intervals of 3 hours)
     forecast_intervals_to_display = []
     twelve_hours_from_now = now + timedelta(hours=12)
 
     for forecast in forecast_data['list']:
-        forecast_time_utc = datetime.fromtimestamp(forecast['dt'], tz=pytz.utc)
+        # FIX: Correctly handle timezone for fromtimestamp
+        forecast_time_naive = datetime.fromtimestamp(forecast['dt'])
+        forecast_time_utc = pytz.utc.localize(forecast_time_naive) # Localize the naive datetime to UTC
         forecast_time_local = forecast_time_utc.astimezone(indian_tz)
         
-        # We want forecasts starting from *after* the current time, up to 12 hours from now.
-        # OpenWeatherMap's 'forecast' endpoint provides data at 3-hour steps.
-        # We need 4 intervals to cover roughly 12 hours (e.g., 3, 6, 9, 12 hours from now).
+        # We want forecasts starting *from* or *just after* the current tweet time
+        # and up to 12 hours from now.
+        # Ensure we pick the *next* 4 intervals, not including the current one if it's too old
         if forecast_time_local > now and len(forecast_intervals_to_display) < 4:
             forecast_intervals_to_display.append(forecast)
 
     for forecast in forecast_intervals_to_display:
-        forecast_time_utc = datetime.fromtimestamp(forecast['dt'], tz=pytz.utc)
+        forecast_time_naive = datetime.fromtimestamp(forecast['dt'])
+        forecast_time_utc = pytz.utc.localize(forecast_time_naive)
         forecast_time_local = forecast_time_utc.astimezone(indian_tz)
 
         temp = forecast.get('main', {}).get('temp', 0)
