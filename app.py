@@ -289,8 +289,8 @@ def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
     try:
         img_width = 800
         img_height = 350 # Increased height again to ensure ample space
-        bg_color = (240, 240, 240)  # Light gray background for better readability
-        text_color = (30, 30, 30)   # Dark gray text
+        bg_color = (34,71,102)  # Light gray background for better readability
+        text_color = (255,255,255)   # Dark gray text
 
         img = Image.new('RGB', (img_width, img_height), color=bg_color)
         d = ImageDraw.Draw(img)
