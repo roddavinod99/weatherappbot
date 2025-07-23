@@ -36,4 +36,8 @@ EXPOSE $PORT
 # Command to run the application using Gunicorn
 # Gunicorn will serve your Flask app (app:app refers to 'app' variable in 'app.py')
 # The --timeout 0 is often useful for long-running processes or to avoid timeouts with external APIs
-CMD ["gunicorn", "--bind", "0.0.0.0:$PORT", "app:app", "--timeout", "0"]
+# Before (incorrect):
+# CMD ["gunicorn", "-b", "0.0.0.0:$PORT", "app:app"]
+
+# After (correct):
+CMD gunicorn -b 0.0.0.0:$PORT app:app
