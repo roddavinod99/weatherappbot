@@ -2,7 +2,7 @@ import tweepy
 import requests
 import os
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask
 import logging
 from PIL import Image, ImageDraw, ImageFont
@@ -101,12 +101,17 @@ def generate_dynamic_hashtags(weather_data, current_day):
     wind_speed_kmh = wind_conditions.get('speed', 0) * 3.6
 
     # Check for rain in the upcoming forecast (within the next 12 hours - 4 intervals)
-    for item in weather_data.get('list', [])[1:5]:
-        weather_item_info = item.get('weather', [{}])[0]
-        if 'rain' in weather_item_info.get('main', '').lower() or (200 <= weather_item_info.get('id', 800) < 600):
-            hashtags.add('#HyderabadRains')
-            hashtags.add('#rain')
-            break
+    # Adjusted to check actual forecast items, not just the first 4.
+    indian_tz = pytz.timezone('Asia/Kolkata')
+    now_utc = datetime.utcnow().replace(tzinfo=pytz.utc)
+    for item in weather_data.get('list', []):
+        forecast_time_utc = datetime.fromtimestamp(item['dt'], tzinfo=pytz.utc)
+        if now_utc <= forecast_time_utc <= now_utc + timedelta(hours=12):
+            weather_item_info = item.get('weather', [{}])[0]
+            if 'rain' in weather_item_info.get('main', '').lower() or (200 <= weather_item_info.get('id', 800) < 600):
+                hashtags.add('#HyderabadRains')
+                hashtags.add('#rain')
+                break
 
     if temp_celsius > 35:
         hashtags.add('#Heatwave')
@@ -130,34 +135,58 @@ def create_weather_tweet_content(city, forecast_data):
     indian_tz = pytz.timezone('Asia/Kolkata')
     now = datetime.now(indian_tz)
     current_day = now.strftime('%A')
-    is_rain_forecasted = False # This flag is now primarily for tweet message, not image
+    is_rain_forecasted = False
 
     # --- Current Weather Details for Alt Text ---
-    current_weather = forecast_data['list'][0]
-    main_conditions = current_weather.get('main', {})
-    wind_conditions = current_weather.get('wind', {})
-    weather_info = current_weather.get('weather', [{}])[0]
+    # Find the current weather entry. The first entry in 'list' is usually the closest.
+    current_weather_entry = None
+    for entry in forecast_data['list']:
+        entry_time = datetime.fromtimestamp(entry['dt'], tz=pytz.utc).astimezone(indian_tz)
+        # Assuming the first entry is "current" or very close to it
+        # Or, find the entry whose time is closest to 'now'
+        if entry_time.hour == now.hour and entry_time.day == now.day: # Simplistic check, can be improved
+            current_weather_entry = entry
+            break
+    if not current_weather_entry:
+        current_weather_entry = forecast_data['list'][0] # Fallback to first if exact match not found
+        
+    main_conditions = current_weather_entry.get('main', {})
+    wind_conditions = current_weather_entry.get('wind', {})
+    weather_info = current_weather_entry.get('weather', [{}])[0]
 
     sky_description = weather_info.get('description', "N/A").title()
     temp_celsius = main_conditions.get('temp', 0)
     feels_like_celsius = main_conditions.get('feels_like', 0)
     humidity = main_conditions.get('humidity', 0)
     pressure_hpa = main_conditions.get('pressure', 0)
-    visibility_km = current_weather.get('visibility', 0) / 1000
+    visibility_km = current_weather_entry.get('visibility', 0) / 1000
     wind_speed_kmh = wind_conditions.get('speed', 0) * 3.6
     wind_direction_cardinal = degrees_to_cardinal(wind_conditions.get('deg', 0))
-    cloudiness = current_weather.get('clouds', {}).get('all', 0)
+    cloudiness = current_weather_entry.get('clouds', {}).get('all', 0)
 
     # --- ALT TEXT AND IMAGE CONTENT GENERATION ---
     alt_text_lines = []
-    # Using the current time to make the image content dynamic for testing
-    current_time_str = datetime.now(indian_tz).strftime('%I:%M %p')
+    current_time_str = now.strftime('%I:%M %p')
     alt_text_lines.append(f"Current weather in {city} at {current_time_str}:")
     alt_text_lines.append(f"It's about {temp_celsius:.0f}°C, but feels like {feels_like_celsius:.0f}C with {sky_description.lower()} skies. Humidity is {humidity:.0f}%, pressure {pressure_hpa:.0f} hPa. Wind is {wind_speed_kmh:.0f} km/h from the {wind_direction_cardinal}. Visibility around {visibility_km:.0f} km, and cloudiness is {cloudiness:.0f}%.")
     alt_text_lines.append("\n-------------------><-----------------------\n")
     alt_text_lines.append("Here's what to expect for the next 12 hours:")
 
-    for forecast in forecast_data['list'][1:5]:
+    # Filter forecast data for the next 12 hours
+    forecast_intervals_to_display = []
+    twelve_hours_from_now = now + timedelta(hours=12)
+
+    for forecast in forecast_data['list']:
+        forecast_time_utc = datetime.fromtimestamp(forecast['dt'], tz=pytz.utc)
+        forecast_time_local = forecast_time_utc.astimezone(indian_tz)
+        
+        # We want forecasts starting from *after* the current time, up to 12 hours from now.
+        # OpenWeatherMap's 'forecast' endpoint provides data at 3-hour steps.
+        # We need 4 intervals to cover roughly 12 hours (e.g., 3, 6, 9, 12 hours from now).
+        if forecast_time_local > now and len(forecast_intervals_to_display) < 4:
+            forecast_intervals_to_display.append(forecast)
+
+    for forecast in forecast_intervals_to_display:
         forecast_time_utc = datetime.fromtimestamp(forecast['dt'], tz=pytz.utc)
         forecast_time_local = forecast_time_utc.astimezone(indian_tz)
 
