@@ -1,5 +1,7 @@
+# requirements.txt
+Flask
 tweepy
 requests
+Pillow
 pytz
-Flask
 gunicorn

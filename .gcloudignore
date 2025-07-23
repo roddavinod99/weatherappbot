@@ -18,3 +18,13 @@ ENV/
 
 # Other
 *.swp
+*.bak
+# Logs
+*.log  
+# Configuration files
+config.py
+variables.txt
+env.list
+# Ignore the following files
+# These files are recently edited and should not be deleted
+# .gcloudignore

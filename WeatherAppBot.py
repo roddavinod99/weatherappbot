@@ -5,6 +5,7 @@ import pytz
 from datetime import datetime
 from flask import Flask
 import logging
+from PIL import Image, ImageDraw, ImageFont
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -12,8 +13,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Constants ---
 TWITTER_MAX_CHARS = 280
 CITY_TO_MONITOR = "Gachibowli"
-# IMPORTANT: Make sure this image file is in the same directory as your python script
-IMAGE_PATH_RAIN = "It's going to Rain.png"
+GENERATED_IMAGE_PATH = "weather_report.png"
+
 POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "true").lower() == "true"
 
 if not POST_TO_TWITTER_ENABLED:
@@ -85,7 +86,7 @@ def get_weather_forecast(city):
 
 def generate_dynamic_hashtags(weather_data, current_day):
     """Generates a list of hashtags based on weather conditions."""
-    hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate'} # Using a set to avoid duplicates
+    hashtags = {'#Gachiboli', '#Hyderabad', '#weatherupdate'} # Using a set to avoid duplicates
 
     if not weather_data or 'list' not in weather_data or not weather_data['list']:
         return list(hashtags)
@@ -124,12 +125,12 @@ def create_weather_tweet_content(city, forecast_data):
     Returns a dictionary with all necessary components for the tweet.
     """
     if not forecast_data or 'list' not in forecast_data or not forecast_data['list']:
-        return {"lines": ["Could not generate weather report: Data missing."], "hashtags": ["#error"], "rain_imminent": False, "alt_text": ""}
+        return {"lines": ["Could not generate weather report: Data missing."], "hashtags": ["#error"], "alt_text": ""}
 
     indian_tz = pytz.timezone('Asia/Kolkata')
     now = datetime.now(indian_tz)
     current_day = now.strftime('%A')
-    is_rain_forecasted = False
+    is_rain_forecasted = False # This flag is now primarily for tweet message, not image
 
     # --- Current Weather Details for Alt Text ---
     current_weather = forecast_data['list'][0]
@@ -147,10 +148,12 @@ def create_weather_tweet_content(city, forecast_data):
     wind_direction_cardinal = degrees_to_cardinal(wind_conditions.get('deg', 0))
     cloudiness = current_weather.get('clouds', {}).get('all', 0)
 
-    # --- ALT TEXT GENERATION ---
+    # --- ALT TEXT AND IMAGE CONTENT GENERATION ---
     alt_text_lines = []
-    alt_text_lines.append(f"Current weather in {city} at {now.strftime('%I:%M %p')}:")
-    alt_text_lines.append(f"It's about {temp_celsius:.0f}°C, but feels like {feels_like_celsius:.0f}°C with {sky_description.lower()} skies. Humidity is {humidity:.0f}%, pressure {pressure_hpa:.0f} hPa. Wind is {wind_speed_kmh:.0f} km/h from the {wind_direction_cardinal}. Visibility around {visibility_km:.0f} km, and cloudiness is {cloudiness:.0f}%.")
+    # Using the current time to make the image content dynamic for testing
+    current_time_str = datetime.now(indian_tz).strftime('%I:%M %p')
+    alt_text_lines.append(f"Current weather in {city} at {current_time_str}:")
+    alt_text_lines.append(f"It's about {temp_celsius:.0f}°C, but feels like {feels_like_celsius:.0f}C with {sky_description.lower()} skies. Humidity is {humidity:.0f}%, pressure {pressure_hpa:.0f} hPa. Wind is {wind_speed_kmh:.0f} km/h from the {wind_direction_cardinal}. Visibility around {visibility_km:.0f} km, and cloudiness is {cloudiness:.0f}%.")
     alt_text_lines.append("\n-------------------><-----------------------\n")
     alt_text_lines.append("Here's what to expect for the next 12 hours:")
 
@@ -168,9 +171,7 @@ def create_weather_tweet_content(city, forecast_data):
         if 'rain' in forecast_weather_info.get('main', '').lower() or (200 <= weather_id < 600):
             is_rain_forecasted = True
 
-        forecast_detail = f"By {forecast_time_local.strftime('%I %p')}: Expect {description} around {temp:.0f}°C."
-        if pop > 0:
-            forecast_detail += f" Chance of rain: {pop:.0f}%."
+        forecast_detail = f"By {forecast_time_local.strftime('%I %p')}: Expect {description} around {temp:.0f}°C. Chance of rain: {pop:.0f}%."
         if rain_volume > 0:
             forecast_detail += f" ({rain_volume:.1f}mm expected)."
         alt_text_lines.append(forecast_detail)
@@ -206,13 +207,85 @@ def create_weather_tweet_content(city, forecast_data):
     return {
         "lines": tweet_lines,
         "hashtags": hashtags,
-        "rain_imminent": is_rain_forecasted,
-        "alt_text": alt_text_summary
+        "alt_text": alt_text_summary,
+        "image_content": alt_text_summary # Pass the text for the image
     }
+
+def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
+    """
+    Generates an image with the weather report text, preserving newlines and wrapping long lines,
+    aligned to the left.
+    """
+    try:
+        img_width = 800
+        img_height = 350
+        bg_color = (255, 255, 255)  # White background
+        text_color = (0, 0, 0)      # Black text
+
+        img = Image.new('RGB', (img_width, img_height), color=bg_color)
+        d = ImageDraw.Draw(img)
+
+        try:
+            # Use Consolas font
+            font_size = 17
+            font = ImageFont.truetype("consolas.ttf", font_size)
+        except IOError:
+            logging.warning("consolas.ttf not found, using default font.")
+            font = ImageFont.load_default()
+
+        # Define padding for the text
+        padding_x = 20
+        padding_y = 20
+        max_text_width = img_width - (2 * padding_x)
+        
+        y_text = padding_y
+
+        # Process the input text line by line (respecting existing newlines)
+        for original_line in image_text.split('\n'):
+            words = original_line.split(' ')
+            current_line_words = []
+            
+            # Wrap words for the current original line
+            for word in words:
+                # Test line with the next word to see if it fits
+                test_line = ' '.join(current_line_words + [word])
+                bbox = d.textbbox((0, 0), test_line, font=font)
+                text_w = bbox[2] - bbox[0]
+
+                if text_w <= max_text_width:
+                    current_line_words.append(word)
+                else:
+                    # If it exceeds, draw the accumulated current_line and start a new one
+                    if current_line_words: # Only draw if there are words to draw
+                        line_to_draw = ' '.join(current_line_words)
+                        # ALIGNMENT CHANGE: Set x_text to padding_x for left alignment
+                        x_text = padding_x
+                        d.text((x_text, y_text), line_to_draw, font=font, fill=text_color)
+                        y_text += font_size + 5 # Move to next line (font_size + small line spacing)
+                    current_line_words = [word] # Start new line with the current word
+
+            # Draw any remaining words from the current original line or handle empty lines
+            if current_line_words:
+                line_to_draw = ' '.join(current_line_words)
+                # ALIGNMENT CHANGE: Set x_text to padding_x for left alignment
+                x_text = padding_x
+                d.text((x_text, y_text), line_to_draw, font=font, fill=text_color)
+                y_text += font_size + 5 # Move to next line (font_size + small line spacing)
+            elif not original_line.strip(): # If it was an intentional blank line (e.g., "----><----")
+                 y_text += font_size + 5 # Just add spacing for a blank line
+
+
+        img.save(output_path)
+        logging.info(f"Weather image created successfully at {output_path}")
+        return output_path
+    except Exception as e:
+        logging.error(f"Error creating weather image: {e}")
+        return None
+
 
 # --- Tweeting Function ---
 def tweet_post(tweet_content):
-    """Assembles and posts a tweet, with an image if rain is forecasted."""
+    """Assembles and posts a tweet, always with a dynamically generated image."""
     if not all([bot_api_client_v1, bot_api_client_v2]):
         logging.error("Twitter clients not initialized. Aborting tweet post.")
         return False
@@ -220,9 +293,20 @@ def tweet_post(tweet_content):
     if not POST_TO_TWITTER_ENABLED:
         logging.info("[TEST MODE] Skipping post.")
         logging.info("Tweet Content:\n" + "\n".join(tweet_content['lines']) + "\n" + " ".join(tweet_content['hashtags']))
-        if tweet_content['rain_imminent']:
-            logging.info(f"[TEST MODE] Would post image '{IMAGE_PATH_RAIN}' with alt text: {tweet_content['alt_text']}")
-        return True
+        logging.info(f"[TEST MODE] Would generate and post image with alt text: {tweet_content['alt_text']}")
+        
+        # Generate the image even in test mode so user can see it
+        generated_image_path = create_weather_image(tweet_content['image_content'])
+        if generated_image_path:
+            logging.info(f"Generated image for inspection: {generated_image_path}")
+            logging.info("NOTE: This image file is NOT deleted in test mode for your inspection.")
+        else:
+            logging.error("Failed to generate image for inspection in test mode.")
+        
+        # IMPORTANT: We are NOT calling os.remove() here in test mode
+        # The file will remain for you to inspect.
+        
+        return True # Indicate success in test mode
 
     body = "\n".join(tweet_content['lines'])
     hashtags = tweet_content['hashtags']
@@ -237,18 +321,26 @@ def tweet_post(tweet_content):
         tweet_text = full_tweet
 
     media_ids = []
-    if tweet_content['rain_imminent']:
-        if not os.path.exists(IMAGE_PATH_RAIN):
-            logging.error(f"Rain image not found at '{IMAGE_PATH_RAIN}'. Posting tweet without image.")
-        else:
+    generated_image_path = create_weather_image(tweet_content['image_content']) # Use image_content for drawing
+    
+    if generated_image_path and os.path.exists(generated_image_path):
+        try:
+            logging.info(f"Uploading dynamically generated media: {generated_image_path}")
+            media = bot_api_client_v1.media_upload(filename=generated_image_path)
+            media_ids.append(media.media_id)
+            bot_api_client_v1.create_media_metadata(media_id=media.media_id, alt_text=tweet_content['alt_text'])
+            logging.info("Media uploaded and alt text added successfully.")
+        except Exception as e:
+            logging.error(f"Failed to upload media or add alt text: {e}")
+        finally:
+            # Clean up the generated image file after use (ONLY IN LIVE MODE)
             try:
-                logging.info(f"Rain detected. Uploading media: {IMAGE_PATH_RAIN}")
-                media = bot_api_client_v1.media_upload(filename=IMAGE_PATH_RAIN)
-                media_ids.append(media.media_id)
-                bot_api_client_v1.create_media_metadata(media_id=media.media_id, alt_text=tweet_content['alt_text'])
-                logging.info("Media uploaded and alt text added successfully.")
-            except Exception as e:
-                logging.error(f"Failed to upload media or add alt text: {e}")
+                os.remove(generated_image_path)
+                logging.info(f"Removed temporary image file: {generated_image_path}")
+            except OSError as e:
+                logging.warning(f"Error removing temporary image file {generated_image_path}: {e}")
+    else:
+        logging.error("Failed to generate weather image. Posting tweet without image.")
 
     try:
         bot_api_client_v2.create_tweet(text=tweet_text, media_ids=media_ids if media_ids else None)
