@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Constants ---
 TWITTER_MAX_CHARS = 280
-CITY_TO_MONITOR = "Gachibowli"
+CITY_TO_MONITOR = "Hyderabad" # Changed from "Gachibowli" to "Hyderabad"
 GENERATED_IMAGE_PATH = "weather_report.png"
 
 # Ensure this environment variable check is robust.
@@ -102,7 +102,7 @@ def get_weather_forecast(city):
 
 def generate_dynamic_hashtags(weather_data, current_day):
     """Generates a list of hashtags based on weather conditions."""
-    hashtags = {'#Gachibowli', '#Hyderabad', '#weatherupdate'} # Using a set to avoid duplicates
+    hashtags = {'#Hyderabad', '#weatherupdate'} # Updated initial hashtags
 
     if not weather_data or 'list' not in weather_data or not weather_data['list']:
         logging.warning("No weather data available for hashtag generation.")
@@ -201,7 +201,7 @@ def create_weather_tweet_content(city, forecast_data):
     alt_text_lines = []
     current_time_str = now.strftime('%I:%M %p')
     alt_text_lines.append(f"Current weather in {city} at {current_time_str}:")
-    alt_text_lines.append(f"It's about {temp_celsius_str}°C, but feels like {feels_like_celsius_str}C with {sky_description.lower()} skies.")
+    alt_text_lines.append(f"It's about {temp_celsius_str}°C, but feels like {feels_like_celsius_str}°C with {sky_description.lower()} skies.")
     alt_text_lines.append(f"Humidity is {humidity_str}%, pressure {pressure_hpa_str} hPa. Wind is {wind_speed_kmh_str} km/h from the {wind_direction_cardinal}.")
     alt_text_lines.append(f"Visibility around {visibility_km_str} km, and cloudiness is {cloudiness_str}%.")
     alt_text_lines.append("\n-------------------><-----------------------\n")
