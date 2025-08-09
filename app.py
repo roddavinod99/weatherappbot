@@ -6,20 +6,23 @@ from datetime import datetime, timedelta
 from flask import Flask
 import logging
 from PIL import Image, ImageDraw, ImageFont
-import time
 
 # --- Configuration ---
+# Set up logging early to capture all messages.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Constants ---
 TWITTER_MAX_CHARS = 280
-CITY_TO_MONITOR = "Hyderabad"
+CITY_TO_MONITOR = "Hyderabad" # Changed from "Gachibowli" to "Hyderabad"
 GENERATED_IMAGE_PATH = "weather_report.png"
 
-POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "false").lower() == "true"
+# Ensure this environment variable check is robust.
+# .lower() == "true" handles "True", "TRUE", etc.
+POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "false").lower() == "true" # Default to false for safety
 
 if not POST_TO_TWITTER_ENABLED:
     logging.warning("Twitter interactions are DISABLED (Test Mode).")
+    logging.warning("To enable, set the environment variable POST_TO_TWITTER_ENABLED=true")
 else:
     logging.info("Twitter interactions ARE ENABLED. Tweets will be posted to Twitter.")
 
@@ -31,130 +34,52 @@ def get_env_variable(var_name, critical=True):
     """Retrieves an environment variable, raising an error if critical and not found."""
     value = os.environ.get(var_name)
     if value is None and critical:
+        # It's good to raise an error for critical variables.
+        # This will stop the app from starting if essential keys are missing.
         raise EnvironmentError(f"Critical environment variable '{var_name}' not found.")
     return value
 
 def degrees_to_cardinal(d):
     """Converts wind direction in degrees to a cardinal direction."""
+    # Ensure 'd' is handled gracefully if it's not a number or None.
     if d is None:
         return "N/A"
     try:
-        d = float(d)
+        d = float(d) # Convert to float to be safe
     except ValueError:
         return "N/A"
     
     dirs = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
+    # The calculation assumes d is positive, if it can be negative, consider d % 360
     ix = int((d + 11.25) / 22.5)
     return dirs[ix % 16]
 
-# --- Enhanced Twitter API Initialization ---
+# --- Initialize Twitter API Clients (v1.1 for media, v2 for tweets) ---
 bot_api_client_v2 = None
 bot_api_client_v1 = None
+try:
+    consumer_key = get_env_variable("TWITTER_API_KEY")
+    consumer_secret = get_env_variable("TWITTER_API_SECRET")
+    access_token = get_env_variable("TWITTER_ACCESS_TOKEN")
+    access_token_secret = get_env_variable("TWITTER_ACCESS_TOKEN_SECRET")
 
-def initialize_twitter_clients():
-    """Initialize Twitter clients with enhanced error handling."""
-    global bot_api_client_v2, bot_api_client_v1
-    
-    try:
-        consumer_key = get_env_variable("TWITTER_API_KEY")
-        consumer_secret = get_env_variable("TWITTER_API_SECRET")
-        access_token = get_env_variable("TWITTER_ACCESS_TOKEN")
-        access_token_secret = get_env_variable("TWITTER_ACCESS_TOKEN_SECRET")
+    # v2 client for creating tweets
+    bot_api_client_v2 = tweepy.Client(
+        consumer_key=consumer_key, consumer_secret=consumer_secret,
+        access_token=access_token, access_token_secret=access_token_secret
+    )
 
-        # Validate that all credentials are present and not empty
-        credentials = [consumer_key, consumer_secret, access_token, access_token_secret]
-        if not all(cred and cred.strip() for cred in credentials):
-            raise ValueError("One or more Twitter credentials are empty or contain only whitespace")
+    # v1.1 client is needed for media uploads and metadata
+    auth = tweepy.OAuth1UserHandler(consumer_key, consumer_secret, access_token, access_token_secret)
+    bot_api_client_v1 = tweepy.API(auth)
 
-        # v2 client for creating tweets with user context
-        bot_api_client_v2 = tweepy.Client(
-            consumer_key=consumer_key, 
-            consumer_secret=consumer_secret,
-            access_token=access_token, 
-            access_token_secret=access_token_secret,
-            wait_on_rate_limit=True  # Handle rate limits automatically
-        )
-
-        # v1.1 client for media uploads with user context
-        auth = tweepy.OAuth1UserHandler(
-            consumer_key, 
-            consumer_secret, 
-            access_token, 
-            access_token_secret
-        )
-        bot_api_client_v1 = tweepy.API(auth, wait_on_rate_limit=True)
-
-        # Test the connection and verify write permissions
-        try:
-            # Test v2 client - get user info to verify connection
-            user_info = bot_api_client_v2.get_me()
-            logging.info(f"Twitter v2 client initialized successfully for user: @{user_info.data.username}")
-            
-            # Test v1.1 client - verify connection
-            logging.info("Twitter v1.1 client initialized successfully")
-            
-        except tweepy.TooManyRequests:
-            logging.warning("Rate limit hit during client verification - clients still initialized")
-        except tweepy.Forbidden as e:
-            logging.error(f"403 Forbidden during client verification: {e}")
-            logging.error("This might indicate missing Write permissions or invalid tokens")
-            logging.error("Please ensure your X app has Read+Write permissions and regenerate tokens")
-        except Exception as e:
-            logging.warning(f"Client verification failed but proceeding: {e}")
-
-        logging.info("Twitter clients initialized with enhanced error handling")
-        return True
-        
-    except EnvironmentError as e:
-        logging.error(f"Missing environment variable: {e}")
-        logging.error("Required: TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET")
-        return False
-    except ValueError as e:
-        logging.error(f"Invalid credentials: {e}")
-        return False
-    except Exception as e:
-        logging.critical(f"Unexpected error during Twitter client initialization: {e}")
-        return False
-
-def handle_twitter_error(error, operation):
-    """Enhanced error handling for Twitter API errors."""
-    if isinstance(error, tweepy.TooManyRequests):
-        logging.warning(f"Rate limit exceeded for {operation}")
-        return False
-    elif isinstance(error, tweepy.Forbidden):
-        error_msg = str(error)
-        if "not permitted to perform this action" in error_msg.lower():
-            logging.error(f"403 Forbidden: Missing permissions for {operation}")
-            logging.error("Possible causes:")
-            logging.error("1. App permissions don't include Write access")
-            logging.error("2. Tokens were generated before setting Write permissions")
-            logging.error("3. Free plan rate limit exceeded (17 posts/24h)")
-            logging.error("4. Account suspended or restricted")
-            logging.error("Solution: Check app permissions and regenerate tokens if needed")
-        else:
-            logging.error(f"403 Forbidden for {operation}: {error_msg}")
-        return False
-    elif isinstance(error, tweepy.Unauthorized):
-        logging.error(f"401 Unauthorized for {operation}: Invalid credentials")
-        return False
-    elif isinstance(error, tweepy.NotFound):
-        logging.error(f"404 Not Found for {operation}: Resource not found")
-        return False
-    elif isinstance(error, tweepy.TweepyException):
-        logging.error(f"Twitter API error for {operation}: {error}")
-        if hasattr(error, 'response') and error.response:
-            try:
-                error_data = error.response.json()
-                logging.error(f"Error details: {error_data}")
-            except:
-                logging.error(f"Error response: {error.response.text}")
-        return False
-    else:
-        logging.error(f"Unexpected error for {operation}: {error}")
-        return False
-
-# Initialize clients on startup
-initialize_twitter_clients()
+    logging.info("Twitter v1.1 and v2 clients initialized successfully.")
+except EnvironmentError as e:
+    logging.error(f"Error initializing Twitter clients due to missing environment variable: {e}")
+    # If critical variables are missing, it's often better to exit or prevent further execution.
+    # Here, we'll let it proceed but `tweet_post` will check if clients are None.
+except Exception as e:
+    logging.critical(f"An unexpected error occurred during Twitter client initialization: {e}")
 
 # --- Weather and Tweet Creation Functions ---
 def get_weather_forecast(city):
@@ -395,6 +320,7 @@ def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
             font_size = 10
             line_height = font_size + 3
 
+
         padding_x = 20
         padding_y = 20
         max_text_width = img_width - (2 * padding_x)
@@ -450,9 +376,10 @@ def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
         logging.error(f"Error creating weather image: {e}")
         return None
 
-# --- Enhanced Tweeting Function ---
+
+# --- Tweeting Function ---
 def tweet_post(tweet_content):
-    """Enhanced tweet posting with comprehensive error handling."""
+    """Assembles and posts a tweet, always with a dynamically generated image."""
     if not all([bot_api_client_v1, bot_api_client_v2]):
         logging.error("Twitter clients not initialized. Aborting tweet post.")
         return False
@@ -460,90 +387,77 @@ def tweet_post(tweet_content):
     if not POST_TO_TWITTER_ENABLED:
         logging.info("[TEST MODE] Skipping actual Twitter post.")
         logging.info("Tweet Content:\n" + "\n".join(tweet_content['lines']) + "\n" + " ".join(tweet_content['hashtags']))
+        logging.info(f"[TEST MODE] Would generate and post image with alt text: {tweet_content['alt_text']}")
         
         generated_image_path = create_weather_image(tweet_content['image_content'])
         if generated_image_path:
             logging.info(f"Generated image for inspection: {generated_image_path}")
+            logging.info("NOTE: This image file is NOT deleted in test mode for your inspection.")
+        else:
+            logging.error("Failed to generate image for inspection in test mode.")
+        
         return True
 
     body = "\n".join(tweet_content['lines'])
     hashtags = tweet_content['hashtags']
+
     full_tweet = f"{body}\n{' '.join(hashtags)}"
     tweet_text = full_tweet
-    
     if len(full_tweet) > TWITTER_MAX_CHARS:
-        logging.warning("Tweet content + hashtags exceed character limit. Adjusting.")
+        logging.warning("Tweet content + hashtags exceed character limit. Adjusting tweet text.")
         while hashtags and len(f"{body}\n{' '.join(hashtags)}") > TWITTER_MAX_CHARS:
             hashtags.pop()
         tweet_text = f"{body}\n{' '.join(hashtags)}" if hashtags else body
         
         if len(tweet_text) > TWITTER_MAX_CHARS:
-            logging.warning("Tweet body too long. Truncating.")
+            logging.warning("Even without hashtags, tweet body is too long. Truncating body.")
             tweet_text = tweet_text[:TWITTER_MAX_CHARS - 3] + "..."
 
-    # Handle media upload
     media_ids = []
     if tweet_content['image_content']:
         generated_image_path = create_weather_image(tweet_content['image_content'])
-        
-        if generated_image_path and os.path.exists(generated_image_path):
-            try:
-                logging.info(f"Uploading media: {generated_image_path}")
-                media = bot_api_client_v1.media_upload(filename=generated_image_path)
-                media_ids.append(media.media_id)
-                
-                # Add alt text
-                bot_api_client_v1.create_media_metadata(
-                    media_id=media.media_id_string, 
-                    alt_text=tweet_content['alt_text']
-                )
-                logging.info("Media uploaded successfully with alt text")
-                
-            except Exception as e:
-                if not handle_twitter_error(e, "media upload"):
-                    logging.error("Media upload failed, posting without image")
-            finally:
-                try:
-                    os.remove(generated_image_path)
-                    logging.info(f"Removed temporary image: {generated_image_path}")
-                except OSError as e:
-                    logging.warning(f"Could not remove temp file: {e}")
+    else:
+        generated_image_path = None
+        logging.error("No image content provided for image generation.")
 
-    # Post the tweet with retries
-    max_retries = 3
-    retry_delay = 5
-    
-    for attempt in range(max_retries):
+    if generated_image_path and os.path.exists(generated_image_path):
         try:
-            if media_ids:
-                response = bot_api_client_v2.create_tweet(text=tweet_text, media_ids=media_ids)
-            else:
-                response = bot_api_client_v2.create_tweet(text=tweet_text)
-            
-            # Success!
-            tweet_id = response.data['id']
-            logging.info(f"Tweet posted successfully! ID: {tweet_id}")
-            logging.info(f"Tweet ({len(tweet_text)} chars): {tweet_text}")
-            
-            return True
-            
+            logging.info(f"Uploading dynamically generated media: {generated_image_path}")
+            media = bot_api_client_v1.media_upload(filename=generated_image_path)
+            media_ids.append(media.media_id)
+            bot_api_client_v1.create_media_metadata(media_id=media.media_id_string, alt_text=tweet_content['alt_text'])
+            logging.info("Media uploaded and alt text added successfully.")
         except Exception as e:
-            is_handled = handle_twitter_error(e, "create tweet")
-            
-            # Don't retry for permanent errors
-            if isinstance(e, (tweepy.Forbidden, tweepy.Unauthorized, tweepy.NotFound)):
-                logging.error("Permanent error - not retrying")
-                break
-                
-            # Retry for temporary errors
-            if attempt < max_retries - 1:
-                logging.warning(f"Attempt {attempt + 1} failed, retrying in {retry_delay}s...")
-                time.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-            else:
-                logging.error(f"All {max_retries} attempts failed")
-    
-    return False
+            logging.error(f"Failed to upload media or add alt text: {e}")
+        finally:
+            try:
+                os.remove(generated_image_path)
+                logging.info(f"Removed temporary image file: {generated_image_path}")
+            except OSError as e:
+                logging.warning(f"Error removing temporary image file {generated_image_path}: {e}")
+    else:
+        logging.error("Failed to generate weather image or image file does not exist. Posting tweet without image.")
+
+    try:
+        if media_ids:
+            response = bot_api_client_v2.create_tweet(text=tweet_text, media_ids=media_ids)
+        else:
+            response = bot_api_client_v2.create_tweet(text=tweet_text)
+        
+        logging.info(f"Tweet posted successfully! Tweet ID: {response.data['id']}")
+        logging.info(f"Final Tweet ({len(tweet_text)} chars): \n{tweet_text}")
+        return True
+    except tweepy.errors.TooManyRequests:
+        logging.warning("Rate limit exceeded. Will not retry.")
+        return False
+    except tweepy.errors.TweepyException as err:
+        logging.error(f"Error posting tweet: {err}")
+        if hasattr(err, 'response') and err.response is not None:
+            logging.error(f"Twitter API Response: {err.response.text}")
+        return False
+    except Exception as e:
+        logging.critical(f"An unexpected error occurred during tweet posting: {e}")
+        return False
 
 # --- Core Task Logic ---
 def perform_scheduled_tweet_task():
