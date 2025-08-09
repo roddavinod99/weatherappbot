@@ -7,7 +7,6 @@ from flask import Flask
 import logging
 from PIL import Image, ImageDraw, ImageFont
 import time
-import json
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,10 +15,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 TWITTER_MAX_CHARS = 280
 CITY_TO_MONITOR = "Hyderabad"
 GENERATED_IMAGE_PATH = "weather_report.png"
-
-# Rate limiting for Free plan (17 posts per 24 hours)
-MAX_POSTS_PER_24H = 15  # Set slightly below limit for safety
-RATE_LIMIT_FILE = "/tmp/tweet_rate_limit.json"
 
 POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "false").lower() == "true"
 
@@ -38,61 +33,6 @@ def get_env_variable(var_name, critical=True):
     if value is None and critical:
         raise EnvironmentError(f"Critical environment variable '{var_name}' not found.")
     return value
-
-def check_rate_limit():
-    """Check if we're within the Free plan rate limit (15 posts per 24h)."""
-    try:
-        if os.path.exists(RATE_LIMIT_FILE):
-            with open(RATE_LIMIT_FILE, 'r') as f:
-                data = json.load(f)
-        else:
-            data = {"posts": [], "last_reset": datetime.now().isoformat()}
-        
-        now = datetime.now()
-        twenty_four_hours_ago = now - timedelta(hours=24)
-        
-        # Remove posts older than 24 hours
-        recent_posts = [
-            post_time for post_time in data["posts"] 
-            if datetime.fromisoformat(post_time) > twenty_four_hours_ago
-        ]
-        
-        data["posts"] = recent_posts
-        
-        # Save updated data
-        with open(RATE_LIMIT_FILE, 'w') as f:
-            json.dump(data, f)
-        
-        posts_in_24h = len(recent_posts)
-        logging.info(f"Posts in last 24 hours: {posts_in_24h}/{MAX_POSTS_PER_24H}")
-        
-        if posts_in_24h >= MAX_POSTS_PER_24H:
-            logging.warning(f"Rate limit reached: {posts_in_24h}/{MAX_POSTS_PER_24H} posts in 24h")
-            return False
-        
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error checking rate limit: {e}")
-        return True  # Allow posting if rate limit check fails
-
-def record_successful_post():
-    """Record a successful post for rate limiting."""
-    try:
-        if os.path.exists(RATE_LIMIT_FILE):
-            with open(RATE_LIMIT_FILE, 'r') as f:
-                data = json.load(f)
-        else:
-            data = {"posts": [], "last_reset": datetime.now().isoformat()}
-        
-        data["posts"].append(datetime.now().isoformat())
-        
-        with open(RATE_LIMIT_FILE, 'w') as f:
-            json.dump(data, f)
-            
-        logging.info("Successful post recorded for rate limiting")
-    except Exception as e:
-        logging.error(f"Error recording successful post: {e}")
 
 def degrees_to_cardinal(d):
     """Converts wind direction in degrees to a cardinal direction."""
@@ -150,7 +90,7 @@ def initialize_twitter_clients():
             user_info = bot_api_client_v2.get_me()
             logging.info(f"Twitter v2 client initialized successfully for user: @{user_info.data.username}")
             
-            # Test v1.1 client - verify connection (removed the problematic get_rate_limit_status call)
+            # Test v1.1 client - verify connection
             logging.info("Twitter v1.1 client initialized successfully")
             
         except tweepy.TooManyRequests:
@@ -512,7 +452,7 @@ def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
 
 # --- Enhanced Tweeting Function ---
 def tweet_post(tweet_content):
-    """Enhanced tweet posting with comprehensive error handling and rate limiting."""
+    """Enhanced tweet posting with comprehensive error handling."""
     if not all([bot_api_client_v1, bot_api_client_v2]):
         logging.error("Twitter clients not initialized. Aborting tweet post.")
         return False
@@ -525,11 +465,6 @@ def tweet_post(tweet_content):
         if generated_image_path:
             logging.info(f"Generated image for inspection: {generated_image_path}")
         return True
-
-    # Check rate limit before posting
-    if not check_rate_limit():
-        logging.warning("Skipping post due to rate limit (Free plan: 15 posts/24h)")
-        return False
 
     body = "\n".join(tweet_content['lines'])
     hashtags = tweet_content['hashtags']
@@ -590,8 +525,6 @@ def tweet_post(tweet_content):
             logging.info(f"Tweet posted successfully! ID: {tweet_id}")
             logging.info(f"Tweet ({len(tweet_text)} chars): {tweet_text}")
             
-            # Record successful post for rate limiting
-            record_successful_post()
             return True
             
         except Exception as e:
