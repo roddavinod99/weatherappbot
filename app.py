@@ -264,7 +264,7 @@ def create_weather_tweet_content(city, forecast_data):
     ]
 
     if is_rain_forecasted_for_tweet:
-        tweet_lines.append("Heads up! Looks like rain is on the way. Stay dry! 🌧️")
+        tweet_lines.append("Looks like rain is on the way. Stay dry! 🌧️")
         closing_message = ""
     else:
         tweet_lines.append("☔ No significant rain expected soon.")
