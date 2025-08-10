@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Constants ---
 TWITTER_MAX_CHARS = 280
-CITY_TO_MONITOR = "Hyderabad" # Changed from "Gachibowli" to "Hyderabad"
+CITY_TO_MONITOR = "Hyderabad"
 GENERATED_IMAGE_PATH = "weather_report.png"
 
 # Ensure this environment variable check is robust.
@@ -76,8 +76,6 @@ try:
     logging.info("Twitter v1.1 and v2 clients initialized successfully.")
 except EnvironmentError as e:
     logging.error(f"Error initializing Twitter clients due to missing environment variable: {e}")
-    # If critical variables are missing, it's often better to exit or prevent further execution.
-    # Here, we'll let it proceed but `tweet_post` will check if clients are None.
 except Exception as e:
     logging.critical(f"An unexpected error occurred during Twitter client initialization: {e}")
 
@@ -289,8 +287,8 @@ def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
     try:
         img_width = 800
         img_height = 350 # Increased height again to ensure ample space
-        bg_color = (34,71,102)  # Light gray background for better readability
-        text_color = (255,255,255)   # Dark gray text
+        bg_color = (34,71,102)  # Light gray background for better readability
+        text_color = (255,255,255)   # Dark gray text
 
         img = Image.new('RGB', (img_width, img_height), color=bg_color)
         d = ImageDraw.Draw(img)
@@ -357,7 +355,7 @@ def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
                     if current_line_words:
                         line_to_draw = ' '.join(current_line_words)
                         d.text((padding_x, y_text), line_to_draw, font=font, fill=text_color)
-                        y_text += line_height
+                    y_text += line_height
                     current_line_words = [word]
 
             if current_line_words:
@@ -376,6 +374,33 @@ def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
         logging.error(f"Error creating weather image: {e}")
         return None
 
+def check_rate_limit():
+    """
+    Checks the rate limit status for a specific endpoint using the v1.1 client.
+    
+    Returns:
+        int: The number of remaining requests, or 0 if an error occurs.
+    """
+    if not bot_api_client_v1:
+        logging.error("Twitter v1.1 client not initialized. Cannot check rate limit.")
+        return 0
+
+    try:
+        # Get rate limit status for the /statuses/update endpoint (used for posting tweets)
+        limit_status = bot_api_client_v1.rate_limit_status()
+        limits = limit_status['resources']['statuses']['/statuses/update']
+        remaining = limits['remaining']
+        reset_time_epoch = limits['reset']
+        
+        # Convert epoch time to human-readable format
+        indian_tz = pytz.timezone('Asia/Kolkata')
+        reset_time = datetime.fromtimestamp(reset_time_epoch, pytz.utc).astimezone(indian_tz)
+
+        logging.info(f"Rate limit check for 'statuses/update': {remaining} requests remaining, resets at {reset_time.strftime('%I:%M:%S %p %Z')}")
+        return remaining
+    except Exception as e:
+        logging.error(f"Failed to check rate limit status: {e}")
+        return 0
 
 # --- Tweeting Function ---
 def tweet_post(tweet_content):
@@ -397,6 +422,15 @@ def tweet_post(tweet_content):
             logging.error("Failed to generate image for inspection in test mode.")
         
         return True
+
+    # --- NEW: Rate limit check before attempting to tweet ---
+    remaining_requests = check_rate_limit()
+    if remaining_requests <= 1: # We want at least one remaining request to post the tweet
+        logging.warning(f"Rate limit is low ({remaining_requests} left). Aborting tweet post to avoid hitting the limit.")
+        return False
+    else:
+        logging.info(f"{remaining_requests} requests available. Proceeding with tweet.")
+
 
     body = "\n".join(tweet_content['lines'])
     hashtags = tweet_content['hashtags']
@@ -448,7 +482,7 @@ def tweet_post(tweet_content):
         logging.info(f"Final Tweet ({len(tweet_text)} chars): \n{tweet_text}")
         return True
     except tweepy.errors.TooManyRequests:
-        logging.warning("Rate limit exceeded. Will not retry.")
+        logging.warning("Rate limit exceeded. Aborting tweet task.")
         return False
     except tweepy.errors.TweepyException as err:
         logging.error(f"Error posting tweet: {err}")
@@ -504,3 +538,4 @@ if __name__ == "__main__":
     app_port = int(os.environ.get("PORT", 8080))
     logging.info(f"--- Starting Flask Server for local development on port {app_port} ---")
     app.run(host='0.0.0.0', port=app_port, debug=True)
+# Note: In production, you would typically use a WSGI server like Gunicorn or uWSGI to run this Flask app.  
