@@ -334,7 +334,7 @@ def create_weather_tweet_content(city, weather_data, air_pollution_data):
 def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
     """Generates an image with the weather report text, with bold headings."""
     try:
-        img_width, img_height = 860, 500
+        img_width, img_height = 885, 500
         bg_color, text_color = (34, 71, 102), (255, 255, 255)
 
         img = Image.new('RGB', (img_width, img_height), color=bg_color)
