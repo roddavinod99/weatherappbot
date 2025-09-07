@@ -56,7 +56,7 @@ def get_time_based_greeting(hour):
         return "Good afternoon"
     else:
         return "Good evening"
-        
+
 def get_weather_mood(temp_c, hour):
     """Generates a dynamic mood phrase based on temperature and time of day."""
     if hour >= 22 or hour < 5:
@@ -259,9 +259,9 @@ def create_weather_tweet_content(city, weather_data, air_pollution_data):
 
     closing_sentence = ""
     if future_rain_in_12_hours:
-        closing_sentence = f"Stay safe, drive carefully on the wet roads, and enjoy the weather, {city}!"
+        closing_sentence = "Stay safe, drive carefully on the wet roads, and enjoy the weather!"
     else:
-        closing_sentence = f"Stay safe and enjoy your day. The roads look dry, {city}!"
+        closing_sentence = "Stay safe and enjoy your day. The roads look dry!"
 
     # --- Assemble the lines for the image/alt text ---
     text_lines = []
@@ -335,21 +335,22 @@ def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
     """Generates an image with the weather report text, with bold headings."""
     try:
         img_width, img_height = 885, 500
-        bg_color, text_color = (27, 42, 65), (255, 255, 255)
+        bg_color, text_color = (236, 239, 241), (66, 66, 66)
 
         img = Image.new('RGB', (img_width, img_height), color=bg_color)
         d = ImageDraw.Draw(img)
 
-        # ✅ UPDATED: Robust font path handling
+        # ✅ UPDATED: Robust font path handling for Merriweather
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        font_regular_path = os.path.join(script_dir, "consolas.ttf")
-        font_bold_path = os.path.join(script_dir, "consolasb.ttf")
+        font_regular_path = os.path.join(script_dir, "Merriweather_36pt-MediumItalic.ttf")
+        font_bold_path = os.path.join(script_dir, "Merriweather_24pt-BoldItalic.ttf")
         
         try:
-            font_regular = ImageFont.truetype(font_regular_path, 18)
-            font_bold = ImageFont.truetype(font_bold_path, 18)
-            font_size = 17
-            logging.info("Successfully loaded Consolas regular and bold fonts.")
+            # You may need to adjust the font size to fit the Merriweather font well.
+            font_size = 18 
+            font_regular = ImageFont.truetype(font_regular_path, font_size)
+            font_bold = ImageFont.truetype(font_bold_path, font_size)
+            logging.info("Successfully loaded Merriweather fonts.")
         except IOError:
             logging.warning("Custom fonts not found. Using default font.")
             font_regular = ImageFont.load_default()
