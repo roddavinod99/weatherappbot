@@ -19,10 +19,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Clean up apt caches to keep image size small
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the font file into the container
-# Make sure consolas.ttf is in the same directory as your Dockerfile
-COPY consolas.ttf /usr/share/fonts/truetype/consolas/consolas.ttf
-# Update font cache
+# Copy the new Merriweather font files into the container
+COPY Merriweather_36pt-MediumItalic.ttf /usr/share/fonts/truetype/merriweather/
+COPY Merriweather_24pt-BoldItalic.ttf /usr/share/fonts/truetype/merriweather/
+
+# Rebuild the font cache to make the new fonts available to the system
 RUN fc-cache -f -v
 
 # Copy the entire application code into the container
