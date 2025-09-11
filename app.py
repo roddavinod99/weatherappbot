@@ -258,7 +258,21 @@ def create_weather_tweet_content(city, weather_data):
             time_str_hourly = forecast_time.strftime('%I %p')
             temp_hourly_str = f"{temp_hourly:.0f}°C" if temp_hourly is not None else ""
             
-            detail_str = f"By {time_str_hourly}: {description} at {temp_hourly_str}. Rain chance: {pop_hourly * 100:.0f}%"
+            # --- START OF CODE ADDITION ---
+            # Get precipitation data, default to 0 if not present
+            rain_mm = hour_data.get('rain', {}).get('1h', 0)
+            snow_mm = hour_data.get('snow', {}).get('1h', 0)
+            precipitation_str = ""
+            if rain_mm > 0:
+                precipitation_str = f"(Rain: {rain_mm:.1f} mm)"
+            elif snow_mm > 0:
+                precipitation_str = f"(Snow: {snow_mm:.1f} mm)"
+            else:
+                precipitation_str = "(Precipitation: 0 mm)"
+            
+            # Update the detail string to include precipitation
+            detail_str = f"By {time_str_hourly}: {description} at {temp_hourly_str}. Rain chance: {pop_hourly * 100:.0f}%. {precipitation_str}"
+            # --- END OF CODE ADDITION ---
             image_text_lines.append(detail_str)
             
     image_text_lines.append("") # Spacer
