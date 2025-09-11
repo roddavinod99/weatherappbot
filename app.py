@@ -69,26 +69,6 @@ def get_weather_mood(temp_c, hour):
     else:
         return "pleasant day"
 
-def generate_air_quality_text(city, aqi_str, uvi, uvi_level):
-    """Generates dynamic text for air quality and UV index."""
-    
-    # Air quality sentence
-    if aqi_str == "good":
-        aqi_text = f"The air quality in {city} is currently {aqi_str}, which is great news for outdoor activities."
-    else:
-        aqi_text = f"The air quality in {city} is currently {aqi_str}. It's a good idea to be mindful of this if you have respiratory sensitivities."
-    
-    # UV index sentence
-    uvi_text = f"The UV Index is {uvi} out of 11 ({uvi_level})."
-    if uvi <= 2:
-        uvi_text += " You don't have to worry too much about sun exposure today."
-    elif uvi <= 5:
-        uvi_text += " A little sunscreen wouldn't hurt, especially if you'll be outside for a while."
-    else:
-        uvi_text += " Be sure to use sun protection like sunscreen and a hat."
-        
-    return f"{aqi_text} {uvi_text}"
-
 # --- Initialize Twitter API Clients (v1.1 for media, v2 for tweets) ---
 bot_api_client_v2 = None
 bot_api_client_v1 = None
@@ -118,7 +98,6 @@ def get_city_coordinates(city, api_key):
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
-        # ✅ FIXED: Check if the list is not empty before accessing an element to prevent IndexError
         if data and len(data) > 0:
             return data[0]['lat'], data[0]['lon']
         else:
@@ -129,29 +108,17 @@ def get_city_coordinates(city, api_key):
         return None, None
 
 def get_one_call_weather_data(lat, lon, api_key):
-    """Fetches weather data using OpenWeatherMap One Call API 3.0."""
+    """Fetches weather data using OpenWeatherMap One Call API 3.0, including daily forecast."""
     if not lat or not lon:
         return None
-    url = f"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&appid={api_key}&units=metric&exclude=minutely,daily,alerts"
+    # Changed: Removed 'daily' from the exclude list to get the daily forecast
+    url = f"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&appid={api_key}&units=metric&exclude=minutely,alerts"
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as err:
         logging.error(f"Error fetching One Call weather data: {err}")
-        return None
-
-def get_air_pollution_data(lat, lon, api_key):
-    """Fetches air pollution data (AQI)."""
-    if not lat or not lon:
-        return None
-    url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={api_key}"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as err:
-        logging.error(f"Error fetching air pollution data: {err}")
         return None
 
 # --- Tweet Content Creation and Formatting ---
@@ -191,11 +158,11 @@ def generate_dynamic_hashtags(weather_data, current_day):
     
     return list(hashtags)
 
-def create_weather_tweet_content(city, weather_data, air_pollution_data):
+def create_weather_tweet_content(city, weather_data):
     """Creates the new conversational tweet content, alt text, and image text."""
     if not weather_data or 'current' not in weather_data or 'hourly' not in weather_data:
         logging.error("Missing or invalid weather data for tweet content creation.")
-        return {"lines": ["Could not generate weather report: Data missing."], "hashtags": ["#error"], "alt_text": "", "image_content": "No weather data available."}
+        return {"lines": ["Could not generate weather report: Data missing."], "hashtags": ["#error"], "alt_text": "", "image_content": []}
 
     indian_tz = pytz.timezone('Asia/Kolkata')
     now = datetime.now(indian_tz)
@@ -209,7 +176,7 @@ def create_weather_tweet_content(city, weather_data, air_pollution_data):
     humidity = current.get('humidity')
     wind_speed_mps = current.get('wind_speed')
     wind_direction_deg = current.get('wind_deg')
-    uvi = current.get('uvi')
+    sky_description_now = current.get('weather', [{}])[0].get('main', 'clouds').lower()
     
     # --- Check for future rain to make text dynamic ---
     future_rain_in_12_hours = any(hour.get('pop', 0) > 0.1 for hour in weather_data.get('hourly', [])[:12])
@@ -224,129 +191,129 @@ def create_weather_tweet_content(city, weather_data, air_pollution_data):
     pop_now = weather_data['hourly'][0].get('pop', 0)
     pop_str_now = f"{pop_now * 100:.0f}%"
 
-    # --- Air Quality Data ---
-    aqi_str = "moderate" # Default
-    if air_pollution_data and 'list' in air_pollution_data and air_pollution_data['list']:
-        aqi = air_pollution_data['list'][0]['main']['aqi']
-        aqi_map = {1: "good", 2: "fair", 3: "moderate", 4: "poor", 5: "very poor"}
-        aqi_str = aqi_map.get(aqi, "moderate")
-    
-    # --- UV Index Data ---
-    uvi_level = "N/A"
-    if uvi is not None:
-        if uvi <= 2: uvi_level = "low"
-        elif uvi <= 5: uvi_level = "moderate"
-        elif uvi <= 7: uvi_level = "high"
-        else: uvi_level = "very high"
-
-    # --- ALT TEXT AND IMAGE CONTENT GENERATION ---
+    # --- Main Tweet Content (A shorter summary) ---
     greeting = get_time_based_greeting(current_hour)
     
-    main_paragraph_intro = f"The city is experiencing a {get_weather_mood(temp_c, current_hour)}."
-    main_paragraph_details = (
-        f"The current temperature is {temp_c_str} and it feels like {feels_like_c_str}. "
-        f"There's a gentle breeze from the {wind_direction_cardinal} at {wind_speed_mph_str}. "
-        f"Humidity is at {humidity_str}."
-    )
+    time_str = now.strftime('%I:%M %p')
+    date_str = f"{now.day} {now.strftime('%B')}"
     
+    greeting_line = f"{greeting.title()}, {city}! 👋"
+    tweet_lines = [
+        f"{greeting_line}",
+        f"It's currently {temp_c_str} (feels like {feels_like_c_str}) with {sky_description_now}.",
+    ]
+    
+    # Add a short forecast summary to the tweet
+    daily_forecasts = weather_data.get('daily', [])
+    if len(daily_forecasts) > 1:
+        tomorrow_data = daily_forecasts[1]
+        temp_max = tomorrow_data.get('temp', {}).get('max')
+        temp_max_str = f"{temp_max:.0f}°C" if temp_max is not None else ""
+        tomorrow_desc = tomorrow_data.get('weather', [{}])[0].get('description', 'clear skies').title()
+        tweet_lines.append(f"Tomorrow: {tomorrow_desc}, with a high of {temp_max_str}.")
+        
+    hashtags = generate_dynamic_hashtags(weather_data, current_day)
+
+    # --- ALT TEXT AND IMAGE CONTENT GENERATION ---
+    image_text_lines = []
+    
+    # Header
+    image_text_lines.append(f"Weather Update for {city.title()} City!")
+    image_text_lines.append(f"As of {time_str}, {date_str}")
+    image_text_lines.append("") # Spacer
+    
+    # Current Conditions Summary
+    image_text_lines.append("Current Conditions:")
+    image_text_lines.append(f"Temperature: {temp_c_str} (feels like {feels_like_c_str})")
+    image_text_lines.append(f"Weather: {sky_description_now.title()}")
+    image_text_lines.append(f"Humidity: {humidity_str}")
+    image_text_lines.append(f"Wind: {wind_direction_cardinal} at {wind_speed_mph_str}")
+    image_text_lines.append("") # Spacer
+    
+    # Today's Outlook
+    weather_mood = get_weather_mood(temp_c, current_hour)
+    main_paragraph_intro = f"The city is experiencing a {weather_mood}."
     rain_sentence = ""
     if pop_now > 0.5:
         rain_sentence = f"There's a high chance of rain today ({pop_str_now}), so don't forget your umbrella!"
     elif pop_now > 0.1:
         rain_sentence = f"There's a small chance of rain today ({pop_str_now}), so keeping an umbrella handy might be a good idea."
     else:
-        rain_sentence = f"With only a {pop_str_now} chance of rain, you can likely leave your umbrella at home."
-
+        rain_sentence = f"With a {pop_str_now} chance of rain, you can likely leave your umbrella at home."
+        
+    image_text_lines.append(f"Today's Outlook: {main_paragraph_intro} {rain_sentence}")
+    image_text_lines.append("") # Spacer
+    
+    # 12-Hour Forecast
+    image_text_lines.append("Detailed Hourly Forecast (Next 12h):")
+    hourly_forecasts = weather_data.get('hourly', [])
+    for i in range(3, 13, 3):
+        if i < len(hourly_forecasts):
+            hour_data = hourly_forecasts[i]
+            forecast_time = datetime.fromtimestamp(hour_data['dt'], tz=indian_tz)
+            pop_hourly = hour_data.get('pop', 0)
+            temp_hourly = hour_data.get('temp')
+            description = hour_data.get('weather', [{}])[0].get('description', '').title()
+            
+            time_str_hourly = forecast_time.strftime('%I %p')
+            temp_hourly_str = f"{temp_hourly:.0f}°C" if temp_hourly is not None else ""
+            
+            detail_str = f"By {time_str_hourly}: {description} at {temp_hourly_str}. Rain chance: {pop_hourly * 100:.0f}%"
+            image_text_lines.append(detail_str)
+            
+    image_text_lines.append("") # Spacer
+    
+    # 3-Day Forecast
+    image_text_lines.append("Upcoming 3-Day Forecast:")
+    daily_forecasts = weather_data.get('daily', [])
+    for i in range(1, min(4, len(daily_forecasts))):
+        day_data = daily_forecasts[i]
+        forecast_date = datetime.fromtimestamp(day_data['dt'], tz=indian_tz)
+        day_of_week = forecast_date.strftime('%A')
+        temp_min = day_data.get('temp', {}).get('min')
+        temp_max = day_data.get('temp', {}).get('max')
+        description = day_data.get('weather', [{}])[0].get('description', '').title()
+        
+        temp_min_str = f"{temp_min:.0f}°C" if temp_min is not None else "N/A"
+        temp_max_str = f"{temp_max:.0f}°C" if temp_max is not None else "N/A"
+        
+        day_summary = f"{day_of_week}: High {temp_max_str}, Low {temp_min_str}. Expect {description}."
+        image_text_lines.append(day_summary)
+        
+    image_text_lines.append("") # Spacer
+    
+    # Closing Sentence
     closing_sentence = ""
     if future_rain_in_12_hours:
         closing_sentence = "Stay safe, drive carefully on the wet roads, and enjoy the weather!"
     else:
-        closing_sentence = "Stay safe and enjoy your day. The roads look dry!"
-
-    # --- Assemble the lines for the image/alt text ---
-    text_lines = []
-    text_lines.append(f"{greeting.title()}, {city}!")
-    text_lines.append(f"{main_paragraph_intro} {main_paragraph_details}, and {rain_sentence}")
-
-    text_lines.append("\nDetailed Forecast for the Next 12 Hours:")
-    text_lines.append("Here's a look at what to expect in the coming hours:")
+        closing_sentence = "Stay safe and have a pleasant day ahead!"
     
-    # ✅ UPDATED: Dynamic hourly forecast logic for next 12 hours with 3-hour intervals
-    # The API returns hourly data, so we can select specific hours to create 3-hour intervals.
-    # We will get forecasts for the 3rd, 6th, 9th, and 12th hours from the current time.
-    hourly_forecasts = weather_data.get('hourly', [])
+    image_text_lines.append(closing_sentence)
     
-    # Loop through the first 12 hours with a step of 3 to get our intervals
-    for i in range(3, 13, 3):
-        # We need to make sure the index is valid.
-        if i < len(hourly_forecasts):
-            hour_data = hourly_forecasts[i]
-            
-            # Use the datetime object from the forecast data itself for accuracy.
-            forecast_time = datetime.fromtimestamp(hour_data['dt'], tz=indian_tz)
-            
-            pop_hourly = hour_data.get('pop', 0)
-            rain_mm = hour_data.get('rain', {}).get('1h', 0)
-            description = hour_data.get('weather', [{}])[0].get('description', 'cloudy skies').title()
-            temp_hourly = hour_data.get('temp')
-            temp_hourly_str = f"{temp_hourly:.0f}°C" if temp_hourly is not None else ""
-            time_str = forecast_time.strftime('%I %p')
-            
-            detail_str = f"By {time_str}: Expect {description} around {temp_hourly_str}. "
-            detail_str += f"Chance of rain: {pop_hourly * 100:.0f}%."
-            if rain_mm > 0:
-                detail_str += f" ({rain_mm:.1f}mm expected)."
-            text_lines.append(detail_str)
-        else:
-            # If there's not enough data, log a warning and break the loop.
-            logging.warning(f"Hourly forecast data not available for hour {i}.")
-            break
-
-    text_lines.append("\nAir Quality & UV Index:")
-    text_lines.append(generate_air_quality_text(city, aqi_str, uvi, uvi_level))
-    text_lines.append(f"\n{closing_sentence}")
-
-    full_text_content = "\n".join(text_lines)
-    
-    # --- Main Tweet Content (A shorter summary) ---
-    sky_description_now = weather_data['current'].get('weather', [{}])[0].get('main', 'clouds')
-    
-    time_str = now.strftime('%I:%M %p')
-    date_str = f"{now.day} {now.strftime('%B')}"
-    
-    greeting_line = f"{greeting.title()}, {city}! 👋, {current_day} weather as of {date_str}, {time_str}:"
-
-    tweet_lines = [
-        greeting_line,
-        f"It's currently {temp_c_str} (feels like {feels_like_c_str}) with {description}.",
-        f"AQI is {aqi_str}. #StaySafe"
-    ]
-    
-    hashtags = generate_dynamic_hashtags(weather_data, current_day)
+    full_alt_text = "\n".join(image_text_lines)
 
     return {
         "lines": tweet_lines,
         "hashtags": hashtags,
-        "alt_text": full_text_content,
-        "image_content": full_text_content
+        "alt_text": full_alt_text,
+        "image_content": image_text_lines
     }
 
-def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
-    """Generates an image with the weather report text, with bold headings."""
+def create_weather_image(image_text_lines, output_path=GENERATED_IMAGE_PATH):
+    """Generates an image with the weather report text from a list of lines, with bold headings and text wrapping."""
     try:
-        img_width, img_height = 885, 500
+        img_width, img_height = 985, 650
         bg_color, text_color = (236, 239, 241), (66, 66, 66)
 
         img = Image.new('RGB', (img_width, img_height), color=bg_color)
         d = ImageDraw.Draw(img)
 
-        # ✅ UPDATED: Robust font path handling for Merriweather
         script_dir = os.path.dirname(os.path.abspath(__file__))
         font_regular_path = os.path.join(script_dir, "Merriweather_36pt-MediumItalic.ttf")
         font_bold_path = os.path.join(script_dir, "Merriweather_24pt-BoldItalic.ttf")
         
         try:
-            # You may need to adjust the font size to fit the Merriweather font well.
             font_size = 18 
             font_regular = ImageFont.truetype(font_regular_path, font_size)
             font_bold = ImageFont.truetype(font_bold_path, font_size)
@@ -358,24 +325,22 @@ def create_weather_image(image_text, output_path=GENERATED_IMAGE_PATH):
             font_size = 10
         
         line_height = font_size + 7
-        heading_prefixes = ("Good", "Detailed Forecast", "Air Quality")
+        heading_prefixes = ("Weather Update", "Current Conditions:", "Today's Outlook:", "Detailed Hourly Forecast", "Upcoming 3-Day Forecast")
         padding_x, padding_y = 20, 20
         max_text_width = img_width - (2 * padding_x)
         y_text = padding_y
 
-        for original_line in image_text.split('\n'):
-            current_font = font_bold if original_line.strip().startswith(heading_prefixes) else font_regular
-
+        for original_line in image_text_lines:
             if not original_line.strip():
                 y_text += line_height
                 continue
 
+            current_font = font_bold if original_line.strip().startswith(heading_prefixes) else font_regular
             words = original_line.split(' ')
             current_line_words = []
             
             for word in words:
                 test_line = ' '.join(current_line_words + [word])
-                # ✅ UPDATED: Use modern textbbox for measurement
                 bbox = d.textbbox((0, 0), test_line, font=current_font)
                 text_w = bbox[2] - bbox[0]
 
@@ -408,7 +373,7 @@ def tweet_post(tweet_content):
     if not all([bot_api_client_v1, bot_api_client_v2]):
         logging.error("Twitter clients not initialized. Aborting tweet post.")
         return False
-        
+    
     if not POST_TO_TWITTER_ENABLED:
         logging.info("[TEST MODE] Skipping actual Twitter post.")
         logging.info("Tweet Content:\n" + "\n".join(tweet_content['lines']) + "\n" + " ".join(tweet_content['hashtags']))
@@ -482,13 +447,12 @@ def perform_scheduled_tweet_task():
         return False
 
     weather_data = get_one_call_weather_data(lat, lon, weather_api_key)
-    air_pollution_data = get_air_pollution_data(lat, lon, weather_api_key)
 
     if not weather_data:
         logging.warning(f"Could not retrieve weather for {CITY_TO_MONITOR}. Aborting.")
         return False
 
-    tweet_content = create_weather_tweet_content(CITY_TO_MONITOR, weather_data, air_pollution_data)
+    tweet_content = create_weather_tweet_content(CITY_TO_MONITOR, weather_data)
     
     if "Could not generate weather report" in tweet_content['lines'][0]:
         logging.error("Tweet content generation failed. Aborting tweet post.")
@@ -521,7 +485,7 @@ def run_tweet_task_endpoint():
 # --- Main Execution Block ---
 if __name__ == "__main__":
     app_port = int(os.environ.get("PORT", 8080))
-    # ✅ UPDATED: Debug mode is now controlled by an environment variable
+    # UPDATED: Debug mode is now controlled by an environment variable
     is_debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
     logging.info(f"--- Starting Flask Server on port {app_port} ---")
     logging.info(f"Debug mode is {'ON' if is_debug_mode else 'OFF'}")
