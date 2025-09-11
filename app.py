@@ -6,6 +6,8 @@ from datetime import datetime
 from flask import Flask
 import logging
 from PIL import Image, ImageDraw, ImageFont
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,9 +22,9 @@ def get_env_variable(var_name, critical=True):
 
 # --- Constants ---
 TWITTER_MAX_CHARS = 280
-# UPDATED: City is now configurable via an environment variable
 CITY_TO_MONITOR = get_env_variable("CITY_TO_MONITOR", critical=False) or "Hyderabad"
 GENERATED_IMAGE_PATH = "weather_report.png"
+GENERATED_CHART_PATH = "weather_chart.png"
 
 POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "false").lower() == "true"
 
@@ -44,6 +46,7 @@ def degrees_to_cardinal(d):
         d = float(d)
     except (ValueError, TypeError):
         return "N/A"
+    
     dirs = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
     ix = int((d + 11.25) / 22.5)
     return dirs[ix % 16]
@@ -111,7 +114,6 @@ def get_one_call_weather_data(lat, lon, api_key):
     """Fetches weather data using OpenWeatherMap One Call API 3.0, including daily forecast."""
     if not lat or not lon:
         return None
-    # Changed: Removed 'daily' from the exclude list to get the daily forecast
     url = f"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&appid={api_key}&units=metric&exclude=minutely,alerts"
     try:
         response = requests.get(url, timeout=10)
@@ -120,6 +122,41 @@ def get_one_call_weather_data(lat, lon, api_key):
     except requests.exceptions.RequestException as err:
         logging.error(f"Error fetching One Call weather data: {err}")
         return None
+
+# --- NEW FUNCTION: Extract chart data specifically ---
+def get_hourly_chart_data(weather_data):
+    """
+    Extracts the next 25 hours of weather data for the chart, starting from the current hour.
+    
+    Returns a dictionary with lists of times, temperatures, and precipitation.
+    """
+    if not weather_data or 'hourly' not in weather_data:
+        logging.error("Missing hourly data for chart generation.")
+        return {"times": [], "temperatures": [], "precipitation": []}
+    
+    indian_tz = pytz.timezone('Asia/Kolkata')
+    
+    hourly_forecasts = weather_data.get('hourly', [])
+    
+    now = datetime.now(indian_tz)
+    start_index = 0
+    for i, h in enumerate(hourly_forecasts):
+        hour_time = datetime.fromtimestamp(h['dt'], tz=pytz.utc).astimezone(indian_tz)
+        if hour_time.hour == now.hour and hour_time.day == now.day:
+            start_index = i
+            break
+            
+    chart_hours = hourly_forecasts[start_index:start_index + 25] 
+    
+    times = [datetime.fromtimestamp(h['dt'], tz=indian_tz) for h in chart_hours]
+    temperatures = [h['temp'] for h in chart_hours]
+    precipitation = [h.get('rain', {}).get('1h', 0) + h.get('snow', {}).get('1h', 0) for h in chart_hours]
+    
+    return {
+        "times": times,
+        "temperatures": temperatures,
+        "precipitation": precipitation
+    }
 
 # --- Tweet Content Creation and Formatting ---
 def generate_dynamic_hashtags(weather_data, current_day):
@@ -162,14 +199,13 @@ def create_weather_tweet_content(city, weather_data):
     """Creates the new conversational tweet content, alt text, and image text."""
     if not weather_data or 'current' not in weather_data or 'hourly' not in weather_data:
         logging.error("Missing or invalid weather data for tweet content creation.")
-        return {"lines": ["Could not generate weather report: Data missing."], "hashtags": ["#error"], "alt_text": "", "image_content": []}
+        return {"lines": ["Could not generate weather report: Data missing."], "hashtags": ["#error"], "alt_text": "", "image_content": [], "chart_data": {}}
 
     indian_tz = pytz.timezone('Asia/Kolkata')
     now = datetime.now(indian_tz)
     current_day = now.strftime('%A')
     current_hour = now.hour
 
-    # --- Extract Current Weather Data ---
     current = weather_data['current']
     temp_c = current.get('temp')
     feels_like_c = current.get('feels_like')
@@ -178,10 +214,8 @@ def create_weather_tweet_content(city, weather_data):
     wind_direction_deg = current.get('wind_deg')
     sky_description_now = current.get('weather', [{}])[0].get('main', 'clouds').lower()
     
-    # --- Check for future rain to make text dynamic ---
     future_rain_in_12_hours = any(hour.get('pop', 0) > 0.1 for hour in weather_data.get('hourly', [])[:12])
     
-    # --- Data Conversion and Formatting ---
     temp_c_str = f"{temp_c:.0f}°C" if temp_c is not None else "N/A"
     feels_like_c_str = f"{feels_like_c:.0f}°C" if feels_like_c is not None else "N/A"
     humidity_str = f"{humidity:.0f}%" if humidity is not None else "N/A"
@@ -191,7 +225,6 @@ def create_weather_tweet_content(city, weather_data):
     pop_now = weather_data['hourly'][0].get('pop', 0)
     pop_str_now = f"{pop_now * 100:.0f}%"
 
-    # --- Main Tweet Content (A shorter summary) ---
     greeting = get_time_based_greeting(current_hour)
     
     time_str = now.strftime('%I:%M %p')
@@ -203,7 +236,6 @@ def create_weather_tweet_content(city, weather_data):
         f"It's currently {temp_c_str} (feels like {feels_like_c_str}) with {sky_description_now}.",
     ]
     
-    # Add a short forecast summary to the tweet
     daily_forecasts = weather_data.get('daily', [])
     if len(daily_forecasts) > 1:
         tomorrow_data = daily_forecasts[1]
@@ -214,23 +246,19 @@ def create_weather_tweet_content(city, weather_data):
         
     hashtags = generate_dynamic_hashtags(weather_data, current_day)
 
-    # --- ALT TEXT AND IMAGE CONTENT GENERATION ---
     image_text_lines = []
     
-    # Header
     image_text_lines.append(f"Weather Update for {city.title()} City!")
     image_text_lines.append(f"As of {time_str}, {date_str}")
-    image_text_lines.append("") # Spacer
+    image_text_lines.append("")
     
-    # Current Conditions Summary
     image_text_lines.append("Current Conditions:")
     image_text_lines.append(f"Temperature: {temp_c_str} (feels like {feels_like_c_str})")
     image_text_lines.append(f"Weather: {sky_description_now.title()}")
     image_text_lines.append(f"Humidity: {humidity_str}")
     image_text_lines.append(f"Wind: {wind_direction_cardinal} at {wind_speed_mph_str}")
-    image_text_lines.append("") # Spacer
+    image_text_lines.append("")
     
-    # Today's Outlook
     weather_mood = get_weather_mood(temp_c, current_hour)
     main_paragraph_intro = f"The city is experiencing a {weather_mood}."
     rain_sentence = ""
@@ -242,9 +270,8 @@ def create_weather_tweet_content(city, weather_data):
         rain_sentence = f"With a {pop_str_now} chance of rain, you can likely leave your umbrella at home."
         
     image_text_lines.append(f"Today's Outlook: {main_paragraph_intro} {rain_sentence}")
-    image_text_lines.append("") # Spacer
+    image_text_lines.append("")
     
-    # 12-Hour Forecast
     image_text_lines.append("Detailed Hourly Forecast (Next 12h):")
     hourly_forecasts = weather_data.get('hourly', [])
     for i in range(3, 13, 3):
@@ -258,8 +285,6 @@ def create_weather_tweet_content(city, weather_data):
             time_str_hourly = forecast_time.strftime('%I %p')
             temp_hourly_str = f"{temp_hourly:.0f}°C" if temp_hourly is not None else ""
             
-            # --- START OF CODE ADDITION ---
-            # Get precipitation data, default to 0 if not present
             rain_mm = hour_data.get('rain', {}).get('1h', 0)
             snow_mm = hour_data.get('snow', {}).get('1h', 0)
             precipitation_str = ""
@@ -270,14 +295,11 @@ def create_weather_tweet_content(city, weather_data):
             else:
                 precipitation_str = "(Precipitation: 0 mm)"
             
-            # Update the detail string to include precipitation
             detail_str = f"By {time_str_hourly}: {description} at {temp_hourly_str}. Rain chance: {pop_hourly * 100:.0f}%. {precipitation_str}"
-            # --- END OF CODE ADDITION ---
             image_text_lines.append(detail_str)
             
-    image_text_lines.append("") # Spacer
+    image_text_lines.append("")
     
-    # 3-Day Forecast
     image_text_lines.append("Upcoming 3-Day Forecast:")
     daily_forecasts = weather_data.get('daily', [])
     for i in range(1, min(4, len(daily_forecasts))):
@@ -294,9 +316,8 @@ def create_weather_tweet_content(city, weather_data):
         day_summary = f"{day_of_week}: High {temp_max_str}, Low {temp_min_str}. Expect {description}."
         image_text_lines.append(day_summary)
         
-    image_text_lines.append("") # Spacer
+    image_text_lines.append("")
     
-    # Closing Sentence
     closing_sentence = ""
     if future_rain_in_12_hours:
         closing_sentence = "Stay safe, drive carefully on the wet roads, and enjoy the weather!"
@@ -307,13 +328,16 @@ def create_weather_tweet_content(city, weather_data):
     
     full_alt_text = "\n".join(image_text_lines)
 
+    chart_data = get_hourly_chart_data(weather_data)
+    
     return {
         "lines": tweet_lines,
         "hashtags": hashtags,
         "alt_text": full_alt_text,
-        "image_content": image_text_lines
+        "image_content": image_text_lines,
+        "chart_data": chart_data
     }
-
+    
 def create_weather_image(image_text_lines, output_path=GENERATED_IMAGE_PATH):
     """Generates an image with the weather report text from a list of lines, with bold headings and text wrapping."""
     try:
@@ -349,7 +373,13 @@ def create_weather_image(image_text_lines, output_path=GENERATED_IMAGE_PATH):
                 y_text += line_height
                 continue
 
-            current_font = font_bold if original_line.strip().startswith(heading_prefixes) else font_regular
+            is_heading = False
+            for prefix in heading_prefixes:
+                if original_line.strip().startswith(prefix):
+                    is_heading = True
+                    break
+            
+            current_font = font_bold if is_heading else font_regular
             words = original_line.split(' ')
             current_line_words = []
             
@@ -381,22 +411,122 @@ def create_weather_image(image_text_lines, output_path=GENERATED_IMAGE_PATH):
         logging.error(f"Error creating weather image: {e}")
         return None
 
+# --- Function to create the chart image ---
+def create_weather_chart(chart_data, output_path=GENERATED_CHART_PATH):
+    """Generates a weather chart with a temperature line and precipitation bar graph,
+    including a vertical marker for the current time."""
+    try:
+        times = chart_data["times"]
+        temperatures = chart_data["temperatures"]
+        precipitation = chart_data["precipitation"]
+
+        if not times or not temperatures or not precipitation:
+            logging.warning("Insufficient data to create weather chart.")
+            return None
+            
+        indian_tz = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(indian_tz)
+
+        # Use a style without a grid, as we will control it manually for better layering.
+        plt.style.use('seaborn-v0_8-white')
+        
+        fig, ax1 = plt.subplots(figsize=(10, 6), facecolor='#eceff1')
+        fig.set_size_inches(9.85, 6.5)
+
+        # --- IMPROVEMENT: Manually add grid and set it to be behind other elements ---
+        ax1.grid(True, which='major', linestyle='--', linewidth='0.5', color='grey', alpha=0.6)
+        ax1.set_axisbelow(True)
+
+        ax2 = ax1.twinx()
+        # --- IMPROVEMENT: Dynamically calculate bar width for better spacing ---
+        if len(times) > 1:
+            time_delta = (times[1] - times[0]).total_seconds()
+            bar_width_in_days = time_delta / (24 * 3600) * 0.7  # 70% of the interval
+        else:
+            bar_width_in_days = 0.03 # Fallback for single data point
+        ax2.bar(times, precipitation, color='#94d6d6', alpha=0.8, width=bar_width_in_days, label='Precipitation (mm)')
+        ax2.set_ylabel('Precipitation (mm)', color='#666666', fontsize=12)
+        ax2.tick_params(axis='y', colors='#666666')
+        ax2.set_ylim(0, max(max(precipitation) * 1.2, 5))
+
+        ax1.plot(times, temperatures, color='#e57373', linewidth=3, marker='o', markersize=6, label='Temperature (°C)')
+        
+        # --- IMPROVEMENT: Dynamically adjust annotation position to avoid line overlap ---
+        for i, temp in enumerate(temperatures):
+            # Check the slope to decide if text goes above or below
+            is_peak = (i > 0 and temp > temperatures[i-1]) and (i < len(temperatures)-1 and temp > temperatures[i+1])
+            is_trough = (i > 0 and temp < temperatures[i-1]) and (i < len(temperatures)-1 and temp < temperatures[i+1])
+            vertical_offset = -18 if is_trough else 10 # Place text below for troughs
+            ax1.annotate(f"{int(round(temp))}°", (times[i], temperatures[i]),
+                            textcoords="offset points", xytext=(0, vertical_offset), ha='center',
+                            fontsize=12, color='#e57373', fontweight='bold')
+        
+        ax1.set_ylabel('Temperature (°C)', color='#666666', fontsize=12)
+        ax1.tick_params(axis='y', colors='#666666')
+
+        # --- FIX: Set x-axis limits before drawing the vertical line ---
+        start_time = times[0]
+        end_time = times[-1]
+        ax1.set_xlim([start_time, end_time])
+        
+        # Now the vertical line will be correctly within the chart's bounds
+        ax1.axvline(now, color='green', linestyle='--', linewidth=2)
+
+        ax1.set_ylim([min(temperatures) - 5, max(temperatures) + 5])
+
+        ax1.set_title(f'24-Hour Weather Forecast for {CITY_TO_MONITOR.title()}', fontsize=16, fontweight='bold', color='#666666')
+        ax1.set_xlabel('Time of Day', color='#666666', fontsize=12)
+
+        # --- MODIFICATION: Use a custom formatter to show date on day change ---
+        def date_formatter(x, pos):
+            dt = mdates.num2date(x, tz=indian_tz)
+            # If it's the first tick or the date has changed from the previous one, show the date.
+            if pos == 0 or (dt.day != mdates.num2date(ax1.get_xticks()[pos-1], tz=indian_tz).day):
+                return dt.strftime('%I %p\n%b %d')
+            else:
+                return dt.strftime('%I %p')
+
+        ax1.xaxis.set_major_formatter(plt.FuncFormatter(date_formatter))
+        ax1.xaxis.set_major_locator(mdates.HourLocator(interval=3))
+        
+        for tick in ax1.get_xticklabels():
+            # No rotation needed with two-line labels
+            tick.set_fontsize(10)
+            tick.set_color('#666666')
+
+        ax1.set_facecolor('#ffffff')
+
+        lines, labels = ax1.get_legend_handles_labels()
+        bars, bar_labels = ax2.get_legend_handles_labels()
+        ax1.legend(lines + bars, labels + bar_labels, loc='upper left', fontsize=10, frameon=True, fancybox=True, shadow=True)
+
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=100)
+        plt.close()
+        logging.info(f"Weather chart created successfully at {output_path}")
+        return output_path
+    except Exception as e:
+        logging.error(f"Error creating weather chart: {e}")
+        return None
+
 # --- Tweeting Function ---
 def tweet_post(tweet_content):
-    """Assembles and posts a tweet with a dynamically generated image."""
+    """Assembles and posts a tweet with dynamically generated images."""
     if not all([bot_api_client_v1, bot_api_client_v2]):
         logging.error("Twitter clients not initialized. Aborting tweet post.")
         return False
+    
+    generated_image_path = create_weather_image(tweet_content['image_content'])
+    generated_chart_path = create_weather_chart(tweet_content['chart_data'])
     
     if not POST_TO_TWITTER_ENABLED:
         logging.info("[TEST MODE] Skipping actual Twitter post.")
         logging.info("Tweet Content:\n" + "\n".join(tweet_content['lines']) + "\n" + " ".join(tweet_content['hashtags']))
         
-        generated_image_path = create_weather_image(tweet_content['image_content'])
         if generated_image_path:
-            logging.info(f"Generated image for inspection: {generated_image_path}")
-        else:
-            logging.error("Failed to generate image for inspection in test mode.")
+            logging.info(f"Generated text image for inspection: {generated_image_path}")
+        if generated_chart_path:
+            logging.info(f"Generated chart image for inspection: {generated_chart_path}")
         return True
 
     body = "\n".join(tweet_content['lines'])
@@ -414,7 +544,8 @@ def tweet_post(tweet_content):
         tweet_text = full_tweet
     
     media_ids = []
-    generated_image_path = create_weather_image(tweet_content['image_content'])
+    
+    image_paths_to_upload = [generated_image_path, generated_chart_path]
     if generated_image_path and os.path.exists(generated_image_path):
         try:
             logging.info(f"Uploading media: {generated_image_path}")
@@ -424,17 +555,35 @@ def tweet_post(tweet_content):
             if len(alt_text) > 1000:
                 alt_text = alt_text[:997] + "..."
             bot_api_client_v1.create_media_metadata(media_id=media.media_id_string, alt_text=alt_text)
-            logging.info("Media uploaded and alt text added successfully.")
+            logging.info("Text image uploaded and alt text added successfully.")
         except Exception as e:
-            logging.error(f"Failed to upload media or add alt text: {e}")
-        finally:
-            try:
-                os.remove(generated_image_path)
-            except OSError as e:
-                logging.warning(f"Error removing temporary image file {generated_image_path}: {e}")
+            logging.error(f"Failed to upload text image or add alt text: {e}")
     else:
-        logging.error("Failed to generate weather image. Posting tweet without image.")
+        logging.error("Failed to generate weather text image.")
 
+    if generated_chart_path and os.path.exists(generated_chart_path):
+        try:
+            logging.info(f"Uploading media: {generated_chart_path}")
+            media = bot_api_client_v1.media_upload(filename=generated_chart_path)
+            media_ids.append(media.media_id)
+            chart_alt_text = f"A chart showing the 24-hour temperature and precipitation forecast for {CITY_TO_MONITOR}."
+            bot_api_client_v1.create_media_metadata(media_id=media.media_id_string, alt_text=chart_alt_text)
+            logging.info("Chart image uploaded and alt text added successfully.")
+        except Exception as e:
+            logging.error(f"Failed to upload chart image or add alt text: {e}")
+    else:
+        logging.error("Failed to generate weather chart image.")
+        
+    for path in image_paths_to_upload:
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError as e:
+                logging.warning(f"Error removing temporary image file {path}: {e}")
+
+    if not media_ids:
+        logging.warning("No images were successfully uploaded. Posting tweet without media.")
+        
     try:
         response = bot_api_client_v2.create_tweet(text=tweet_text, media_ids=media_ids if media_ids else None)
         logging.info(f"Tweet posted successfully! Tweet ID: {response.data['id']}")
@@ -499,7 +648,6 @@ def run_tweet_task_endpoint():
 # --- Main Execution Block ---
 if __name__ == "__main__":
     app_port = int(os.environ.get("PORT", 8080))
-    # UPDATED: Debug mode is now controlled by an environment variable
     is_debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
     logging.info(f"--- Starting Flask Server on port {app_port} ---")
     logging.info(f"Debug mode is {'ON' if is_debug_mode else 'OFF'}")
