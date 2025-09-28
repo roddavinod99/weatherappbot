@@ -2,12 +2,15 @@ import tweepy
 import requests
 import os
 import pytz
+import math
 from datetime import datetime
 from flask import Flask
 import logging
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont 
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
+import matplotlib.dates as mdates 
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,16 +23,35 @@ def get_env_variable(var_name, critical=True):
         raise EnvironmentError(f"Critical environment variable '{var_name}' not found.")
     return value
 
-# --- Constants ---
+def cleanup_temp_files(paths):
+    """Removes temporary image files."""
+    for path in paths:
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+                logging.info(f"Removed temporary file: {path}")
+            except OSError as e:
+                logging.warning(f"Error removing temporary image file {path}: {e}")
+
+# --- Constants (MODIFIED) ---
 TWITTER_MAX_CHARS = 280
-CITY_TO_MONITOR = get_env_variable("CITY_TO_MONITOR", critical=False) or "Hyderabad"
+CITY_TO_MONITOR = os.environ.get("CITY_TO_MONITOR") or "Hyderabad"
 GENERATED_IMAGE_PATH = "weather_report.png"
 GENERATED_CHART_PATH = "weather_chart.png"
 
 POST_TO_TWITTER_ENABLED = os.environ.get("POST_TO_TWITTER_ENABLED", "false").lower() == "true"
 
+# NEW: Coordinates for multi-point sampling across Hyderabad District
+HYDERABAD_COORDINATES = [
+    {"name": "Center (City)", "lat": 17.43, "lon": 78.49},
+    {"name": "North (Secunderabad)", "lat": 17.44, "lon": 78.50},
+    {"name": "West (HITEC City)", "lat": 17.45, "lon": 78.38},
+    {"name": "South (Charminar)", "lat": 17.36, "lon": 78.47},
+    {"name": "East (Uppal/L.B. Nagar)", "lat": 17.38, "lon": 78.55},
+]
+
 if not POST_TO_TWITTER_ENABLED:
-    logging.warning("Twitter interactions are DISABLED (Test Mode).")
+    logging.warning("Twitter interactions are DISABLED (Test Mode). Generated images will be retained.")
     logging.warning("To enable, set the environment variable POST_TO_TWITTER_ENABLED=true")
 else:
     logging.info("Twitter interactions ARE ENABLED. Tweets will be posted to Twitter.")
@@ -89,7 +111,14 @@ try:
     bot_api_client_v1 = tweepy.API(auth)
     logging.info("Twitter v1.1 and v2 clients initialized successfully.")
 except EnvironmentError as e:
-    logging.error(f"Error initializing Twitter clients due to missing environment variable: {e}")
+    # FIX FOR TEST MODE: If the error is due to missing environment variables AND
+    # we are in Test Mode, we log a warning but don't crash.
+    if not POST_TO_TWITTER_ENABLED:
+        logging.warning(f"Twitter clients skipped due to missing API keys (Test Mode): {e}")
+    else:
+        logging.error(f"Error initializing Twitter clients due to missing environment variable: {e}")
+        # Re-raise the error if in live mode and keys are missing
+        raise
 except Exception as e:
     logging.critical(f"An unexpected error occurred during Twitter client initialization: {e}")
 
@@ -120,15 +149,100 @@ def get_one_call_weather_data(lat, lon, api_key):
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as err:
-        logging.error(f"Error fetching One Call weather data: {err}")
+        logging.error(f"Error fetching One Call weather data for ({lat}, {lon}): {err}")
         return None
 
-# --- NEW FUNCTION: Extract chart data specifically ---
+# --- Data Aggregation ---
+def aggregate_weather_data(all_weather_data):
+    """
+    Aggregates weather data from multiple coordinates into a single, representative object.
+    """
+    if not all_weather_data:
+        logging.error("No valid weather data received for aggregation.")
+        return None
+
+    # --- Aggregation for CURRENT conditions ---
+    current_temps = []
+    current_feels_like = []
+    current_humidity = []
+    current_wind_speed = []
+    current_descriptions_count = {}
+    
+    for data in all_weather_data:
+        current = data.get('current')
+        if current:
+            current_temps.append(current.get('temp', 0))
+            current_feels_like.append(current.get('feels_like', 0))
+            current_humidity.append(current.get('humidity', 0))
+            current_wind_speed.append(current.get('wind_speed', 0))
+            
+            desc = current.get('weather', [{}])[0].get('description', 'clear sky').lower()
+            current_descriptions_count[desc] = current_descriptions_count.get(desc, 0) + 1
+
+    # Calculate Averages for numerical data
+    avg_temp = sum(current_temps) / len(current_temps) if current_temps else None
+    avg_feels_like = sum(current_feels_like) / len(current_feels_like) if current_feels_like else None
+    avg_humidity = sum(current_humidity) / len(current_humidity) if current_humidity else None
+    avg_wind_speed = sum(current_wind_speed) / len(current_wind_speed) if current_wind_speed else None
+    
+    # Determine the most common description
+    most_common_desc = max(current_descriptions_count, key=current_descriptions_count.get, default='partly cloudy')
+    
+    # Construct the representative 'current' object (using the first dataset for fixed info like 'dt')
+    representative_data = all_weather_data[0].copy() 
+    
+    # Update current data
+    representative_data['current']['temp'] = avg_temp
+    representative_data['current']['feels_like'] = avg_feels_like
+    representative_data['current']['humidity'] = avg_humidity
+    representative_data['current']['wind_speed'] = avg_wind_speed
+    
+    # Find the 'main' type corresponding to the most common description
+    main_type = next((d['current']['weather'][0]['main'] for d in all_weather_data if d.get('current', {}).get('weather', [{}])[0].get('description', '').lower() == most_common_desc and d.get('current', {}).get('weather')), 'Clouds')
+    
+    representative_data['current']['weather'][0]['description'] = most_common_desc
+    representative_data['current']['weather'][0]['main'] = main_type
+    
+    # --- Aggregation for HOURLY data (Max POP) ---
+    max_pops = [0.0] * 24
+    for data in all_weather_data:
+        hourly = data.get('hourly', [])
+        for i in range(min(24, len(hourly))):
+            max_pops[i] = max(max_pops[i], hourly[i].get('pop', 0))
+
+    for i in range(min(24, len(representative_data.get('hourly', [])))):
+        representative_data['hourly'][i]['pop'] = max_pops[i]
+
+    # --- Aggregation for DAILY data (Avg Temp, Max POP) ---
+    daily_min_temps = [[] for _ in range(7)]
+    daily_max_temps = [[] for _ in range(7)]
+    daily_max_pops = [0.0] * 7
+    
+    for data in all_weather_data:
+        daily = data.get('daily', [])
+        for i in range(min(7, len(daily))):
+            temp = daily[i].get('temp', {})
+            daily_min_temps[i].append(temp.get('min', 0))
+            daily_max_temps[i].append(temp.get('max', 0))
+            daily_max_pops[i] = max(daily_max_pops[i], daily[i].get('pop', 0))
+            
+    for i in range(min(7, len(representative_data.get('daily', [])))):
+        avg_min = sum(daily_min_temps[i]) / len(daily_min_temps[i]) if daily_min_temps[i] else 0
+        avg_max = sum(daily_max_temps[i]) / len(daily_max_temps[i]) if daily_max_temps[i] else 0
+        
+        representative_data['daily'][i]['temp']['min'] = avg_min
+        representative_data['daily'][i]['temp']['max'] = avg_max
+        representative_data['daily'][i]['pop'] = daily_max_pops[i]
+            
+    logging.info(f"Aggregated weather data. Avg Temp: {avg_temp:.2f}°C, Common Condition: {most_common_desc.title()}")
+    return representative_data
+
+# --- Tweet Content Creation and Formatting ---
 def get_hourly_chart_data(weather_data):
     """
-    Extracts the next 25 hours of weather data for the chart, starting from the current hour.
-    
-    Returns a dictionary with lists of times, temperatures, and precipitation.
+    Extracts the next 25 hours of weather data for the chart.
+    CRITICAL FIX APPLIED: OWM hourly data starts at the current or next hour, 
+    so we simply take the first 25 hours.
     """
     if not weather_data or 'hourly' not in weather_data:
         logging.error("Missing hourly data for chart generation.")
@@ -137,19 +251,13 @@ def get_hourly_chart_data(weather_data):
     indian_tz = pytz.timezone('Asia/Kolkata')
     
     hourly_forecasts = weather_data.get('hourly', [])
-    
-    now = datetime.now(indian_tz)
-    start_index = 0
-    for i, h in enumerate(hourly_forecasts):
-        hour_time = datetime.fromtimestamp(h['dt'], tz=pytz.utc).astimezone(indian_tz)
-        if hour_time.hour == now.hour and hour_time.day == now.day:
-            start_index = i
-            break
             
-    chart_hours = hourly_forecasts[start_index:start_index + 25] 
+    # Take the next 25 hours for the chart
+    chart_hours = hourly_forecasts[:25] 
     
-    times = [datetime.fromtimestamp(h['dt'], tz=indian_tz) for h in chart_hours]
+    times = [datetime.fromtimestamp(h['dt'], tz=pytz.utc).astimezone(indian_tz) for h in chart_hours]
     temperatures = [h['temp'] for h in chart_hours]
+    # Precipitation: sum of rain and snow volume in the last hour
     precipitation = [h.get('rain', {}).get('1h', 0) + h.get('snow', {}).get('1h', 0) for h in chart_hours]
     
     return {
@@ -158,7 +266,6 @@ def get_hourly_chart_data(weather_data):
         "precipitation": precipitation
     }
 
-# --- Tweet Content Creation and Formatting ---
 def generate_dynamic_hashtags(weather_data, current_day):
     """Generates a list of hashtags based on weather conditions."""
     hashtags = {f'#{CITY_TO_MONITOR.replace(" ", "")}', '#weatherupdate'}
@@ -212,7 +319,7 @@ def create_weather_tweet_content(city, weather_data):
     humidity = current.get('humidity')
     wind_speed_mps = current.get('wind_speed')
     wind_direction_deg = current.get('wind_deg')
-    sky_description_now = current.get('weather', [{}])[0].get('main', 'clouds').lower()
+    sky_description_now = current.get('weather', [{}])[0].get('description', 'clouds').lower()
     
     future_rain_in_12_hours = any(hour.get('pop', 0) > 0.1 for hour in weather_data.get('hourly', [])[:12])
     
@@ -222,6 +329,7 @@ def create_weather_tweet_content(city, weather_data):
     wind_speed_mph_str = f"{wind_speed_mps * 2.237:.0f} mph" if wind_speed_mps is not None else "N/A"
     wind_direction_cardinal = degrees_to_cardinal(wind_direction_deg)
     
+    # Use the max POP across all sampled points for the current hour
     pop_now = weather_data['hourly'][0].get('pop', 0)
     pop_str_now = f"{pop_now * 100:.0f}%"
 
@@ -248,11 +356,11 @@ def create_weather_tweet_content(city, weather_data):
 
     image_text_lines = []
     
-    image_text_lines.append(f"Weather Update for {city.title()} City!")
+    image_text_lines.append(f"Weather Update for {city.title()} District!") 
     image_text_lines.append(f"As of {time_str}, {date_str}")
     image_text_lines.append("")
     
-    image_text_lines.append("Current Conditions:")
+    image_text_lines.append("Current Conditions (District Average):") 
     image_text_lines.append(f"Temperature: {temp_c_str} (feels like {feels_like_c_str})")
     image_text_lines.append(f"Weather: {sky_description_now.title()}")
     image_text_lines.append(f"Humidity: {humidity_str}")
@@ -260,14 +368,15 @@ def create_weather_tweet_content(city, weather_data):
     image_text_lines.append("")
     
     weather_mood = get_weather_mood(temp_c, current_hour)
-    main_paragraph_intro = f"The city is experiencing a {weather_mood}."
+    main_paragraph_intro = f"The district is experiencing a {weather_mood}."
     rain_sentence = ""
+    # Use the aggregated max POP for the current hour (index 0)
     if pop_now > 0.5:
-        rain_sentence = f"There's a high chance of rain today ({pop_str_now}), so don't forget your umbrella!"
+        rain_sentence = f"There's a high chance of rain today ({pop_str_now} at the highest risk spot), so don't forget your umbrella!"
     elif pop_now > 0.1:
-        rain_sentence = f"There's a small chance of rain today ({pop_str_now}), so keeping an umbrella handy might be a good idea."
+        rain_sentence = f"There's a small chance of rain today ({pop_str_now} at the highest risk spot), so keeping an umbrella handy might be a good idea."
     else:
-        rain_sentence = f"With a {pop_str_now} chance of rain, you can likely leave your umbrella at home."
+        rain_sentence = f"With a {pop_str_now} maximum chance of rain, you can likely leave your umbrella at home."
         
     image_text_lines.append(f"Today's Outlook: {main_paragraph_intro} {rain_sentence}")
     image_text_lines.append("")
@@ -285,22 +394,21 @@ def create_weather_tweet_content(city, weather_data):
             time_str_hourly = forecast_time.strftime('%I %p')
             temp_hourly_str = f"{temp_hourly:.0f}°C" if temp_hourly is not None else ""
             
+            # The 'rain' and 'snow' keys are present in hourly, but might not have '1h' key if 0
             rain_mm = hour_data.get('rain', {}).get('1h', 0)
             snow_mm = hour_data.get('snow', {}).get('1h', 0)
             precipitation_str = ""
-            if rain_mm > 0:
-                precipitation_str = f"(Rain: {rain_mm:.1f} mm)"
-            elif snow_mm > 0:
-                precipitation_str = f"(Snow: {snow_mm:.1f} mm)"
+            if rain_mm > 0 or snow_mm > 0:
+                 precipitation_str = f"(Rain/Snow Vol: {rain_mm + snow_mm:.1f} mm)"
             else:
-                precipitation_str = "(Precipitation: 0 mm)"
+                 precipitation_str = "(Precipitation: 0 mm)"
             
-            detail_str = f"By {time_str_hourly}: {description} at {temp_hourly_str}. Rain chance: {pop_hourly * 100:.0f}%. {precipitation_str}"
+            detail_str = f"By {time_str_hourly}: {description} at {temp_hourly_str},  Max Rain chance: {pop_hourly * 100:.0f}%." 
             image_text_lines.append(detail_str)
             
     image_text_lines.append("")
     
-    image_text_lines.append("Upcoming 3-Day Forecast:")
+    image_text_lines.append("Upcoming 3-Day Forecast (District Avg/Max POP):") 
     daily_forecasts = weather_data.get('daily', [])
     for i in range(1, min(4, len(daily_forecasts))):
         day_data = daily_forecasts[i]
@@ -309,11 +417,12 @@ def create_weather_tweet_content(city, weather_data):
         temp_min = day_data.get('temp', {}).get('min')
         temp_max = day_data.get('temp', {}).get('max')
         description = day_data.get('weather', [{}])[0].get('description', '').title()
+        pop_daily = day_data.get('pop', 0) 
         
         temp_min_str = f"{temp_min:.0f}°C" if temp_min is not None else "N/A"
         temp_max_str = f"{temp_max:.0f}°C" if temp_max is not None else "N/A"
         
-        day_summary = f"{day_of_week}: High {temp_max_str}, Low {temp_min_str}. Expect {description}."
+        day_summary = f"{day_of_week}: High {temp_max_str}, Low {temp_min_str},  Expect {description}, Max POP: {pop_daily * 100:.0f}%" 
         image_text_lines.append(day_summary)
         
     image_text_lines.append("")
@@ -338,7 +447,7 @@ def create_weather_tweet_content(city, weather_data):
         "chart_data": chart_data
     }
     
-def create_weather_image(image_text_lines, output_path=GENERATED_IMAGE_PATH):
+def create_weather_image(image_text_lines, output_path="weather_report.png"):
     """Generates an image with the weather report text from a list of lines, with bold headings and text wrapping."""
     try:
         img_width, img_height = 985, 650
@@ -347,11 +456,12 @@ def create_weather_image(image_text_lines, output_path=GENERATED_IMAGE_PATH):
         img = Image.new('RGB', (img_width, img_height), color=bg_color)
         d = ImageDraw.Draw(img)
 
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        font_regular_path = os.path.join(script_dir, "Merriweather_36pt-MediumItalic.ttf")
-        font_bold_path = os.path.join(script_dir, "Merriweather_24pt-BoldItalic.ttf")
-        
+        # NOTE: Font loading depends on your local environment. Using default if not found.
         try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            font_regular_path = os.path.join(script_dir, "Merriweather_36pt-MediumItalic.ttf")
+            font_bold_path = os.path.join(script_dir, "Merriweather_24pt-BoldItalic.ttf")
+            
             font_size = 18 
             font_regular = ImageFont.truetype(font_regular_path, font_size)
             font_bold = ImageFont.truetype(font_bold_path, font_size)
@@ -361,7 +471,7 @@ def create_weather_image(image_text_lines, output_path=GENERATED_IMAGE_PATH):
             font_regular = ImageFont.load_default()
             font_bold = font_regular
             font_size = 10
-        
+            
         line_height = font_size + 7
         heading_prefixes = ("Weather Update", "Current Conditions:", "Today's Outlook:", "Detailed Hourly Forecast", "Upcoming 3-Day Forecast")
         padding_x, padding_y = 20, 20
@@ -411,10 +521,8 @@ def create_weather_image(image_text_lines, output_path=GENERATED_IMAGE_PATH):
         logging.error(f"Error creating weather image: {e}")
         return None
 
-# --- Function to create the chart image ---
-def create_weather_chart(chart_data, output_path=GENERATED_CHART_PATH):
-    """Generates a weather chart with a temperature line and precipitation bar graph,
-    including a vertical marker for the current time."""
+def create_weather_chart(chart_data, output_path="weather_chart.png"):
+    """Generates a weather chart with a temperature line and precipitation bar graph."""
     try:
         times = chart_data["times"]
         temperatures = chart_data["temperatures"]
@@ -425,38 +533,33 @@ def create_weather_chart(chart_data, output_path=GENERATED_CHART_PATH):
             return None
             
         indian_tz = pytz.timezone('Asia/Kolkata')
-        now = datetime.now(indian_tz)
-
-        # Use a style without a grid, as we will control it manually for better layering.
+        
         plt.style.use('seaborn-v0_8-white')
         
-        fig, ax1 = plt.subplots(figsize=(10, 6), facecolor='#eceff1')
+        # Explicitly set the figure size using the target dimensions
+        fig, ax1 = plt.subplots(figsize=(9.85, 6.5), facecolor='#eceff1')
         fig.set_size_inches(9.85, 6.5)
 
-        # --- IMPROVEMENT: Manually add grid and set it to be behind other elements ---
         ax1.grid(True, which='major', linestyle='--', linewidth='0.5', color='grey', alpha=0.6)
         ax1.set_axisbelow(True)
 
         ax2 = ax1.twinx()
-        # --- IMPROVEMENT: Dynamically calculate bar width for better spacing ---
         if len(times) > 1:
             time_delta = (times[1] - times[0]).total_seconds()
-            bar_width_in_days = time_delta / (24 * 3600) * 0.7  # 70% of the interval
+            bar_width_in_days = time_delta / (24 * 3600) * 0.7 
         else:
-            bar_width_in_days = 0.03 # Fallback for single data point
+            bar_width_in_days = 0.03
         ax2.bar(times, precipitation, color='#94d6d6', alpha=0.8, width=bar_width_in_days, label='Precipitation (mm)')
         ax2.set_ylabel('Precipitation (mm)', color='#666666', fontsize=12)
         ax2.tick_params(axis='y', colors='#666666')
-        ax2.set_ylim(0, max(max(precipitation) * 1.2, 5))
+        # Set min y-limit to 0 for precipitation
+        ax2.set_ylim(0, max(max(precipitation) * 1.2, 5)) 
 
         ax1.plot(times, temperatures, color='#e57373', linewidth=3, marker='o', markersize=6, label='Temperature (°C)')
         
-        # --- IMPROVEMENT: Dynamically adjust annotation position to avoid line overlap ---
         for i, temp in enumerate(temperatures):
-            # Check the slope to decide if text goes above or below
-            is_peak = (i > 0 and temp > temperatures[i-1]) and (i < len(temperatures)-1 and temp > temperatures[i+1])
             is_trough = (i > 0 and temp < temperatures[i-1]) and (i < len(temperatures)-1 and temp < temperatures[i+1])
-            vertical_offset = -18 if is_trough else 10 # Place text below for troughs
+            vertical_offset = -18 if is_trough else 10 
             ax1.annotate(f"{int(round(temp))}°", (times[i], temperatures[i]),
                             textcoords="offset points", xytext=(0, vertical_offset), ha='center',
                             fontsize=12, color='#e57373', fontweight='bold')
@@ -464,24 +567,34 @@ def create_weather_chart(chart_data, output_path=GENERATED_CHART_PATH):
         ax1.set_ylabel('Temperature (°C)', color='#666666', fontsize=12)
         ax1.tick_params(axis='y', colors='#666666')
 
-        # --- FIX: Set x-axis limits before drawing the vertical line ---
         start_time = times[0]
         end_time = times[-1]
         ax1.set_xlim([start_time, end_time])
         
-        # Now the vertical line will be correctly within the chart's bounds
+        now = datetime.now(indian_tz)
         ax1.axvline(now, color='green', linestyle='--', linewidth=2)
 
-        ax1.set_ylim([min(temperatures) - 5, max(temperatures) + 5])
+        # Ensure temperature limits are reasonable
+        temp_min_data = min(temperatures) if temperatures else 0
+        temp_max_data = max(temperatures) if temperatures else 0
+        ax1.set_ylim([temp_min_data - 5, temp_max_data + 5])
 
         ax1.set_title(f'24-Hour Weather Forecast for {CITY_TO_MONITOR.title()}', fontsize=16, fontweight='bold', color='#666666')
         ax1.set_xlabel('Time of Day', color='#666666', fontsize=12)
 
-        # --- MODIFICATION: Use a custom formatter to show date on day change ---
         def date_formatter(x, pos):
+            # Using timezone-aware conversion
             dt = mdates.num2date(x, tz=indian_tz)
-            # If it's the first tick or the date has changed from the previous one, show the date.
-            if pos == 0 or (dt.day != mdates.num2date(ax1.get_xticks()[pos-1], tz=indian_tz).day):
+            
+            # Check for day change to add date label
+            # This logic assumes ax1.get_xticks() returns sorted numeric values
+            day_changed = True 
+            if pos > 0:
+                prev_dt = mdates.num2date(ax1.get_xticks()[pos-1], tz=indian_tz)
+                if dt.day == prev_dt.day:
+                    day_changed = False
+            
+            if day_changed:
                 return dt.strftime('%I %p\n%b %d')
             else:
                 return dt.strftime('%I %p')
@@ -490,7 +603,6 @@ def create_weather_chart(chart_data, output_path=GENERATED_CHART_PATH):
         ax1.xaxis.set_major_locator(mdates.HourLocator(interval=3))
         
         for tick in ax1.get_xticklabels():
-            # No rotation needed with two-line labels
             tick.set_fontsize(10)
             tick.set_color('#666666')
 
@@ -509,26 +621,37 @@ def create_weather_chart(chart_data, output_path=GENERATED_CHART_PATH):
         logging.error(f"Error creating weather chart: {e}")
         return None
 
-# --- Tweeting Function ---
+# --- Tweeting Function (MODIFIED) ---
 def tweet_post(tweet_content):
     """Assembles and posts a tweet with dynamically generated images."""
-    if not all([bot_api_client_v1, bot_api_client_v2]):
-        logging.error("Twitter clients not initialized. Aborting tweet post.")
-        return False
     
-    generated_image_path = create_weather_image(tweet_content['image_content'])
-    generated_chart_path = create_weather_chart(tweet_content['chart_data'])
+    image_paths_to_manage = [GENERATED_IMAGE_PATH, GENERATED_CHART_PATH]
+    
+    # NEW: Clean up old files before generating new ones (good practice)
+    cleanup_temp_files(image_paths_to_manage)
+    
+    # Use constants for output paths
+    generated_image_path = create_weather_image(tweet_content['image_content'], GENERATED_IMAGE_PATH)
+    generated_chart_path = create_weather_chart(tweet_content['chart_data'], GENERATED_CHART_PATH)
     
     if not POST_TO_TWITTER_ENABLED:
         logging.info("[TEST MODE] Skipping actual Twitter post.")
         logging.info("Tweet Content:\n" + "\n".join(tweet_content['lines']) + "\n" + " ".join(tweet_content['hashtags']))
         
-        if generated_image_path:
-            logging.info(f"Generated text image for inspection: {generated_image_path}")
-        if generated_chart_path:
-            logging.info(f"Generated chart image for inspection: {generated_chart_path}")
+        if generated_image_path and os.path.exists(generated_image_path):
+            logging.info(f"Generated text image retained for inspection: {generated_image_path}")
+        if generated_chart_path and os.path.exists(generated_chart_path):
+            logging.info(f"Generated chart image retained for inspection: {generated_chart_path}")
+
         return True
 
+    # --- Live Mode Logic (Only runs if POST_TO_TWITTER_ENABLED is true) ---
+    if not all([bot_api_client_v1, bot_api_client_v2]):
+        logging.error("Twitter clients not initialized. Aborting tweet post in LIVE mode.")
+        # NEW: Clean up generated files if we're in live mode but aborting
+        cleanup_temp_files(image_paths_to_manage)
+        return False
+        
     body = "\n".join(tweet_content['lines'])
     hashtags = tweet_content['hashtags']
     full_tweet = f"{body}\n{' '.join(hashtags)}"
@@ -542,10 +665,10 @@ def tweet_post(tweet_content):
             tweet_text = tweet_text[:TWITTER_MAX_CHARS - 3] + "..."
     else:
         tweet_text = full_tweet
-    
+        
     media_ids = []
     
-    image_paths_to_upload = [generated_image_path, generated_chart_path]
+    
     if generated_image_path and os.path.exists(generated_image_path):
         try:
             logging.info(f"Uploading media: {generated_image_path}")
@@ -574,12 +697,8 @@ def tweet_post(tweet_content):
     else:
         logging.error("Failed to generate weather chart image.")
         
-    for path in image_paths_to_upload:
-        if path and os.path.exists(path):
-            try:
-                os.remove(path)
-            except OSError as e:
-                logging.warning(f"Error removing temporary image file {path}: {e}")
+    # NEW: Cleanup logic centralized in the helper function
+    cleanup_temp_files(image_paths_to_manage) 
 
     if not media_ids:
         logging.warning("No images were successfully uploaded. Posting tweet without media.")
@@ -595,27 +714,45 @@ def tweet_post(tweet_content):
         logging.critical(f"An unexpected error occurred during tweet posting: {e}")
         return False
 
+
 # --- Core Task Logic ---
+
 def perform_scheduled_tweet_task():
-    """Main task to fetch data, create content, and post the tweet."""
-    logging.info(f"--- Running weather tweet job for {CITY_TO_MONITOR} ---")
+    """Main task to fetch data from multiple points, aggregate, create content, and post the tweet."""
+    logging.info(f"--- Running district-wide weather tweet job for {CITY_TO_MONITOR} ---")
     try:
-        weather_api_key = get_env_variable("WEATHER_API_KEY")
+        # WEATHER_API_KEY is still critical, even in test mode, to fetch weather data.
+        weather_api_key = get_env_variable("WEATHER_API_KEY") 
     except EnvironmentError:
         logging.error("WEATHER_API_KEY not found. Aborting.")
         return False
 
-    lat, lon = get_city_coordinates(CITY_TO_MONITOR, weather_api_key)
-    if not lat or not lon:
+    all_weather_data = []
+
+    # 1. Execute Multiple API Calls for the entire district
+    for coord in HYDERABAD_COORDINATES:
+        lat = coord['lat']
+        lon = coord['lon']
+        logging.info(f"Fetching weather for {coord['name']} ({lat}, {lon})...")
+        data = get_one_call_weather_data(lat, lon, weather_api_key)
+        if data:
+            all_weather_data.append(data)
+        else:
+            logging.warning(f"Skipping point {coord['name']} due to failed API call.")
+
+    if not all_weather_data:
+        logging.error(f"Failed to retrieve weather data from any point in {CITY_TO_MONITOR}. Aborting.")
         return False
 
-    weather_data = get_one_call_weather_data(lat, lon, weather_api_key)
+    # 2. Aggregate the Data
+    aggregated_data = aggregate_weather_data(all_weather_data)
 
-    if not weather_data:
-        logging.warning(f"Could not retrieve weather for {CITY_TO_MONITOR}. Aborting.")
+    if not aggregated_data:
+        logging.warning(f"Could not aggregate weather for {CITY_TO_MONITOR}. Aborting.")
         return False
 
-    tweet_content = create_weather_tweet_content(CITY_TO_MONITOR, weather_data)
+    # 3. Create Content and Tweet 
+    tweet_content = create_weather_tweet_content(CITY_TO_MONITOR, aggregated_data)
     
     if "Could not generate weather report" in tweet_content['lines'][0]:
         logging.error("Tweet content generation failed. Aborting tweet post.")
